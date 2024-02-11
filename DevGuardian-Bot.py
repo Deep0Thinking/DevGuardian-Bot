@@ -12,6 +12,7 @@ import config
 CHANNEL_ID = config.CHANNEL_ID 
 BOT_TOKEN = config.BOT_TOKEN 
 AUTHORS_LIST = config.AUTHORS_LIST
+DISCORD_USER_IDS_LIST = config.DISCORD_USER_IDS_LIST
 CURRENT_STYLE = config.CURRENT_STYLE
 REPORT_INTERVAL = config.REPORT_INTERVAL
 PERIODIC_CONTRIBUTIONS_HISTORY_FILE = config.PERIODIC_CONTRIBUTIONS_HISTORY_FILE
@@ -93,7 +94,7 @@ def save_formal_warnings(authors_list, warning_time=None):
 
         print(f"Formal warning saved for {author_name} on {warning_time}.")
 
-async def total_formal_warnings_report(channel, interaction=None, toggle=False):
+async def total_formal_warnings_report(channel, interaction=None):
     try:
         with open(FORMAL_WARNINGS_FILE, 'r') as file:
             warnings_data = json.load(file)
@@ -102,19 +103,21 @@ async def total_formal_warnings_report(channel, interaction=None, toggle=False):
 
     warnings_count = {author: 0 for author in AUTHORS_LIST}
     members_to_expel = []
+    members_to_expel_index = []
     for warning in warnings_data:
         author = warning['author']
         if author in warnings_count:  # Ensure the author is in our list
             warnings_count[author] += 1
-            if warnings_count[author] > MAX_FORMAL_WARNINGS:
+            if warnings_count[author] > MAX_FORMAL_WARNINGS and author not in members_to_expel:
                 members_to_expel.append(author)
+                members_to_expel_index.append(AUTHORS_LIST.index(author))
 
     embed_description = ""
     if CURRENT_STYLE:  # Alternate Style
-        for author in AUTHORS_LIST:
+        for index, author in enumerate(AUTHORS_LIST):
             count = warnings_count[author]
             warning_symbol = " ❗️" if count > MAX_FORMAL_WARNINGS else ""
-            embed_description += f"{author}\n> FW: `{count}`{warning_symbol}\n"
+            embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n> FW: `{count}`{warning_symbol}\n"
     else:  # Table-like Style
         embed_description = "```Author             | FW Count\n"
         embed_description += "-" * 32 + "\n"
@@ -125,13 +128,19 @@ async def total_formal_warnings_report(channel, interaction=None, toggle=False):
         embed_description += "```"
 
     if members_to_expel:
-        warning_text = ", ".join([f"`{author}`" for author in members_to_expel])
+        warning_members = ", ".join([f"`{author}`" for author in members_to_expel])
+        warning_members_ID = ", ".join([f"<@{DISCORD_USER_IDS_LIST[author_index]}>" for author_index in members_to_expel_index])
         expulsion_message = "**Members to be Expelled**\n\n"
-        expulsion_message += f"{warning_text} should be expelled due to accumulating `{MAX_FORMAL_WARNINGS + 1}` or more **formal warnings**, in accordance with the CruxAbyss Development Team License Agreement, section 4.2 Members who accumulate 2 formal warnings will be expelled from the Development Team.\n"
+        expulsion_message += f"{warning_members_ID if CURRENT_STYLE else warning_members} should be expelled due to accumulating `{MAX_FORMAL_WARNINGS + 1}` or more **formal warnings**, in accordance with the CruxAbyss Development Team License Agreement, section 4.2 Members who accumulate 2 formal warnings will be expelled from the Development Team.\n"
         embed_description += "\n" + expulsion_message
     
-    embed = discord.Embed(title="Formal Warnings Report", description=embed_description, color=0xFF0000)
+    with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
+        reports = json.load(file)
+
+    start_time_str = min(report['start_time'] for report in reports)
+    end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
+    embed = discord.Embed(title=f"Formal Warnings Report\n\n`{start_time_str}` to `{end_time_str}`", description=embed_description, color=0xFF0000)
     toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_formal_warnings_style")
     view = View()
     view.add_item(toggle_button)
@@ -169,19 +178,21 @@ async def reset_counts():
 def generate_embed_description(style, activity_counts_param, include_warnings=True):
     embed_description = ""
     authors_with_warnings = []  # Track authors who will receive formal warnings only if include_warnings is True
+    authors_with_warnings_index = []
 
     if style:  # Alternate style
         embed_description += "\n"
-        for author in AUTHORS_LIST:
+        for index, author in enumerate(AUTHORS_LIST):
             pr_count = activity_counts_param.get('Pull request opened', {}).get(author, 0)
             issue_count = activity_counts_param.get('Issue opened', {}).get(author, 0)
             if include_warnings:
                 warning_symbol = " ⚠️" if (pr_count + issue_count) < MIN_PERIODIC_CONTRIBUTIONS else ""
                 if warning_symbol:
                     authors_with_warnings.append(author)
+                    authors_with_warnings_index.append(index)
             else:
                 warning_symbol = ""
-            embed_description += f"{author}\n> PR: `{pr_count}`, Issues: `{issue_count}`{warning_symbol}\n"
+            embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n> PR: `{pr_count}`, Issues: `{issue_count}`{warning_symbol}\n"
     else:  # Table-like style
         embed_description += "```"
         embed_description += "Author             | PR Opened  | Issues Opened\n"
@@ -193,15 +204,17 @@ def generate_embed_description(style, activity_counts_param, include_warnings=Tr
                 warning_symbol = " ⚠️" if (pr_count + issue_count) < MIN_PERIODIC_CONTRIBUTIONS else ""
                 if warning_symbol:
                     authors_with_warnings.append(author)
+                    authors_with_warnings_index.append(AUTHORS_LIST.index(author))
             else:
                 warning_symbol = ""
             embed_description += f"{author: <18} | {pr_count: <10} | {issue_count: <13}{warning_symbol}\n"
         embed_description += "```"
 
     if include_warnings and authors_with_warnings:
-        warning_text = ", ".join([f"`{author}`" for author in authors_with_warnings])
+        warning_members = ", ".join([f"`{author}`" for author in authors_with_warnings])
+        warning_members_ID = ", ".join([f"<@{DISCORD_USER_IDS_LIST[author_index]}>" for author_index in authors_with_warnings_index])
         embed_description += "\n**Formal Warnings Issued**\n\n"
-        embed_description += f"{warning_text} received **`1` formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
+        embed_description += f"{warning_members_ID if style else warning_members} received **`1` formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
 
     if include_warnings:
         return embed_description, authors_with_warnings
@@ -297,7 +310,7 @@ async def calculate_and_display_total_contributions(channel, interaction=None, t
             with open(TOTAL_CONTRIBUTIONS_FILE, 'r') as file:
                 total_data = json.load(file)
                 start_time_str = total_data['start_time']
-                end_time_str = total_data['end_time']
+                end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 total_activity_counts = total_data['activity_counts']
         except FileNotFoundError:
             await channel.send("Total contributions data file not found.")
@@ -318,7 +331,7 @@ async def calculate_and_display_total_contributions(channel, interaction=None, t
                             total_activity_counts[activity][author] += count
 
                 start_time_str = min(report['start_time'] for report in reports)
-                end_time_str = max(report['end_time'] for report in reports)
+                end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
                 # Save the total data for future toggling
                 total_data = {
@@ -355,7 +368,7 @@ async def on_interaction(interaction):
         if interaction.data.get('custom_id') == "toggle_formal_warnings_style":
             await interaction.response.defer()
             CURRENT_STYLE = not CURRENT_STYLE
-            await total_formal_warnings_report(interaction.channel, interaction=interaction, toggle=True)
+            await total_formal_warnings_report(interaction.channel, interaction=interaction)
         elif interaction.data.get('custom_id') == "display_total_contributions":
             await interaction.response.defer()
             await calculate_and_display_total_contributions(interaction.channel, interaction=None, toggle=False)
