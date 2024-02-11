@@ -201,7 +201,7 @@ def generate_embed_description(style, activity_counts_param, include_warnings=Tr
     if include_warnings and authors_with_warnings:
         warning_text = ", ".join([f"`{author}`" for author in authors_with_warnings])
         embed_description += "\n**Formal Warnings Issued**\n\n"
-        embed_description += f"{warning_text} received **`1` formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2. Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
+        embed_description += f"{warning_text} received **`1` formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
 
     if include_warnings:
         return embed_description, authors_with_warnings
