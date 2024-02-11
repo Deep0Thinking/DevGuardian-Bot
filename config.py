@@ -13,6 +13,9 @@ BOT_TOKEN = ''
 # List of predefined authors to track
 AUTHORS_LIST = ["",]
 
+# List of corresponding Discord userID
+DISCORD_USER_IDS_LIST = ["",]
+
 # Current style for report formatting; False for table-like, True for alternate style
 CURRENT_STYLE = False 
 
