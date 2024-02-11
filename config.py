@@ -36,3 +36,6 @@ TOTAL_CONTRIBUTIONS_FILE = 'total_contributions.json'
 
 # Formal warnings file path
 FORMAL_WARNINGS_FILE = 'formal_warnings.json'
+
+# Contribution importance file path
+CONTRIBUTION_IMPORTANCE_FILE = 'contribution_importance.json'
