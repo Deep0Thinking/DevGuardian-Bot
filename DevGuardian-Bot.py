@@ -1,6 +1,7 @@
 import discord
 from discord.ui import Button, View
 from discord.ext import commands
+from discord import app_commands
 from collections import defaultdict
 from datetime import datetime
 import asyncio
@@ -20,6 +21,7 @@ TOTAL_CONTRIBUTIONS_FILE = config.TOTAL_CONTRIBUTIONS_FILE
 FORMAL_WARNINGS_FILE = config.FORMAL_WARNINGS_FILE
 MIN_PERIODIC_CONTRIBUTIONS = config.MIN_PERIODIC_CONTRIBUTIONS
 MAX_FORMAL_WARNINGS = config.MAX_FORMAL_WARNINGS
+CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE 
 
 
 
@@ -33,19 +35,43 @@ async def test(interaction: discord.Interaction):
 async def panel(interaction: discord.Interaction):
     calculate_button = Button(label="Total Contributions", style=discord.ButtonStyle.blurple, custom_id="display_total_contributions")
     warnings_button = Button(label="Total FWs", style=discord.ButtonStyle.red, custom_id="display_total_formal_warnings")
+    importance_button = Button(label="Contribution Importance", style=discord.ButtonStyle.green, custom_id="display_contribution_importance")  # New button
     
     view = View()
     view.add_item(calculate_button)
-    view.add_item(warnings_button)  # Add the warnings button to the view
+    view.add_item(warnings_button)
+    view.add_item(importance_button) 
     await interaction.response.send_message(view=view)
 
-# Initialize a data structure to keep track of activity counts for each author
+@bot.tree.command(name="add_contribution_importance", description="Tag a member's contribution with an importance level")
+@app_commands.describe(member="The member to tag", importance="The importance level of the contribution")
+@app_commands.choices(importance=[
+    app_commands.Choice(name='critical', value='critical'),
+    app_commands.Choice(name='significant', value='significant'),
+    app_commands.Choice(name='notable', value='notable'),
+    app_commands.Choice(name='moderate', value='moderate'),
+    app_commands.Choice(name='minor', value='minor')
+])
+async def add_contribution_importance(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str]):
+
+    valid_importance_levels = ['minor', 'moderate', 'notable', 'significant', 'critical']
+    if importance.value not in valid_importance_levels:
+        await interaction.response.send_message(f"Invalid importance level. Please choose from {', '.join(valid_importance_levels)}.", ephemeral=True)
+        return
+    
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    issuer = interaction.user.name  
+    author_id = str(member.id)
+    author = next((a for a in AUTHORS_LIST if DISCORD_USER_IDS_LIST[AUTHORS_LIST.index(a)] == author_id), None)
+    update_contribution_importance(author, issuer, importance.value, now)
+
+    await interaction.response.send_message(f"`{importance.name}` `+ 1` to {member.mention}'s contributions.", ephemeral=False)
+
 activity_counts = {
     'Pull request opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST}),
     'Issue opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST})
 }
 
-# Variable to keep track of the last time counts were reset
 last_reset_time = datetime.now()
 
 report_title = ""
@@ -63,6 +89,99 @@ async def background_task():
         if datetime.now() - last_reset_time >= REPORT_INTERVAL:
             await send_report(CURRENT_STYLE)
         await asyncio.sleep(1)  # Sleep interval between checks
+
+def update_contribution_importance(author, issuer, importance, issued_time):
+    try:
+        with open(CONTRIBUTION_IMPORTANCE_FILE, 'r+') as file:
+            try:
+                data = json.load(file)
+            except json.JSONDecodeError:  # Handle empty file
+                data = []
+            
+            record = next((item for item in data if item['author'] == author), None)
+            if record:
+                if importance in record:
+                    record[importance] += 1
+                else:
+                    record[importance] = 1
+            else:
+                data.append({
+                    'author': author,
+                    'issued_time': issued_time,
+                    'issuer': issuer,
+                    importance: 1
+                })
+            
+            file.seek(0)
+            file.truncate(0)  # Clear the file before rewriting
+            json.dump(data, file, indent=4)
+    except FileNotFoundError:
+        with open(CONTRIBUTION_IMPORTANCE_FILE, 'w') as file:
+            initial_data = [{
+                'author': author,
+                'issued_time': issued_time,
+                'issuer': issuer,
+                importance: 1
+            }]
+            json.dump(initial_data, file, indent=4)
+
+async def calculate_and_display_contribution_importance(channel, interaction=None):
+    importance_counts = defaultdict(lambda: defaultdict(int))
+    for author in AUTHORS_LIST:
+        for importance in ['critical', 'significant', 'notable', 'moderate', 'minor']:
+            importance_counts[author][importance] = 0
+
+    try:
+        with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
+            contributions_data = json.load(file)
+            for record in contributions_data:
+                # Match author case-insensitively and update counts
+                author_lower = {a.lower(): a for a in AUTHORS_LIST}
+                record_author = author_lower.get(record['author'].lower())
+                if record_author:
+                    for importance, count in record.items():
+                        if importance in importance_counts[record_author]:
+                            importance_counts[record_author][importance] += count
+    except FileNotFoundError:
+        print("Contribution importance data file not found.")
+    
+    # Generate and send the report
+    embed_description = generate_embed_description_for_importance(CURRENT_STYLE, importance_counts)
+    embed = discord.Embed(title="Contribution Importance Report", description=embed_description, color=0x4895EF)
+    toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_importance_style")
+    
+    view = View()
+    view.add_item(toggle_button)
+    
+    if interaction:
+        await interaction.edit_original_response(embed=embed, view=view)
+    else:
+        await channel.send(embed=embed, view=view)
+
+def generate_embed_description_for_importance(style, importance_counts):
+    embed_description = ""
+    authors_contributions_importance_index = []
+
+    if style:  # Alternate Style
+        embed_description += "\n"
+        for index, author in enumerate(AUTHORS_LIST):
+            counts = importance_counts[author]
+            authors_contributions_importance_index.append(index)
+            embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n"
+            embed_description += "".join(f"> {importance.capitalize()}: `{counts[importance]}`\n" for importance in ['critical', 'significant', 'notable', 'moderate', 'minor'])
+            
+    else:  # Table-like style
+        embed_description += "```"
+        headers = "Author             | Cri | Sig | Not | Mod | Min\n"
+        separator = "-" * 51 + "\n"
+        embed_description += headers + separator
+        for author in AUTHORS_LIST: 
+            counts = importance_counts[author]
+            row = f"{author: <18} | "
+            row += " | ".join([f"{counts[importance]: <3}" for importance in ['critical', 'significant', 'notable', 'moderate', 'minor']])
+            embed_description += row + "\n"
+        embed_description += "```"
+    return embed_description
 
 def save_formal_warnings(authors_list, warning_time=None):
     if warning_time is None:
@@ -100,6 +219,8 @@ async def total_formal_warnings_report(channel, interaction=None):
             warnings_data = json.load(file)
     except FileNotFoundError:
         warnings_data = []  # Assume no data if file not found
+        await channel.send("Formal warnings history file not found.")
+        return
 
     warnings_count = {author: 0 for author in AUTHORS_LIST}
     members_to_expel = []
@@ -133,9 +254,13 @@ async def total_formal_warnings_report(channel, interaction=None):
         expulsion_message = "**Members to be Expelled**\n\n"
         expulsion_message += f"{warning_members_ID if CURRENT_STYLE else warning_members} should be expelled due to accumulating `{MAX_FORMAL_WARNINGS + 1}` or more **formal warnings**, in accordance with the CruxAbyss Development Team License Agreement, section 4.2 Members who accumulate 2 formal warnings will be expelled from the Development Team.\n"
         embed_description += "\n" + expulsion_message
-    
-    with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
-        reports = json.load(file)
+
+    try:
+        with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
+            reports = json.load(file)
+    except FileNotFoundError:
+        await channel.send("Periodic contributions history file not found. Need periodic contributions history to generate the total formal warnings report.")
+        return
 
     start_time_str = min(report['start_time'] for report in reports)
     end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -192,7 +317,7 @@ def generate_embed_description(style, activity_counts_param, include_warnings=Tr
                     authors_with_warnings_index.append(index)
             else:
                 warning_symbol = ""
-            embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n> PR: `{pr_count}`, Issues: `{issue_count}`{warning_symbol}\n"
+            embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n> PR: `{pr_count}`\n> Issues: `{issue_count}`{warning_symbol}\n"
     else:  # Table-like style
         embed_description += "```"
         embed_description += "Author             | PR Opened  | Issues Opened\n"
@@ -214,13 +339,10 @@ def generate_embed_description(style, activity_counts_param, include_warnings=Tr
         warning_members = ", ".join([f"`{author}`" for author in authors_with_warnings])
         warning_members_ID = ", ".join([f"<@{DISCORD_USER_IDS_LIST[author_index]}>" for author_index in authors_with_warnings_index])
         embed_description += "\n**Formal Warnings Issued**\n\n"
-        embed_description += f"{warning_members_ID if style else warning_members} received **`1` formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
+        embed_description += f"{warning_members_ID if style else warning_members} received `1` **formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
 
-    if include_warnings:
-        return embed_description, authors_with_warnings
-    else:
-        return embed_description
-
+    return (embed_description, authors_with_warnings) if include_warnings else embed_description
+    
 async def send_report(style):
     global last_reset_time
     global report_title
@@ -296,10 +418,10 @@ async def on_message(message):
                 title = embed.title if embed.title else ""
                 if "Pull request opened" in title:
                     activity_counts['Pull request opened'][embed_author_name] += 1
-                    print(f"Pull request count +1 for {embed_author_name}")
+                    print(f"Pull request `+ 1` for {embed_author_name}")
                 elif "Issue opened" in title:
                     activity_counts['Issue opened'][embed_author_name] += 1
-                    print(f"Issue count +1 for {embed_author_name}")
+                    print(f"Issue count `+ 1` for {embed_author_name}")
             else:
                 print(f"Author {embed_author_name} not in predefined list or not found in embed.")
 
@@ -361,11 +483,18 @@ async def calculate_and_display_total_contributions(channel, interaction=None, t
 async def on_interaction(interaction):
     global CURRENT_STYLE
     if interaction.type == discord.InteractionType.component:
-        if interaction.data.get('custom_id') == "display_total_formal_warnings":
+        if interaction.data.get('custom_id') == "toggle_importance_style":
+            await interaction.response.defer()
+            CURRENT_STYLE = not CURRENT_STYLE
+            await calculate_and_display_contribution_importance(interaction.channel, interaction=interaction)
+        elif interaction.data.get('custom_id') == "display_contribution_importance":
+            await interaction.response.defer()
+            await calculate_and_display_contribution_importance(interaction.channel, interaction=None)
+        elif interaction.data.get('custom_id') == "display_total_formal_warnings":
             await interaction.response.defer()
             await total_formal_warnings_report(interaction.channel, interaction=None)
             return
-        if interaction.data.get('custom_id') == "toggle_formal_warnings_style":
+        elif interaction.data.get('custom_id') == "toggle_formal_warnings_style":
             await interaction.response.defer()
             CURRENT_STYLE = not CURRENT_STYLE
             await total_formal_warnings_report(interaction.channel, interaction=interaction)
