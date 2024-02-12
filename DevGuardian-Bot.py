@@ -10,7 +10,8 @@ import config
 
 
 
-CHANNEL_ID = config.CHANNEL_ID 
+CHANNEL_ID = config.CHANNEL_ID
+SERVER_ID = config.SERVER_ID
 BOT_TOKEN = config.BOT_TOKEN 
 AUTHORS_LIST = config.AUTHORS_LIST
 DISCORD_USER_IDS_LIST = config.DISCORD_USER_IDS_LIST
@@ -21,7 +22,7 @@ TOTAL_CONTRIBUTIONS_FILE = config.TOTAL_CONTRIBUTIONS_FILE
 FORMAL_WARNINGS_FILE = config.FORMAL_WARNINGS_FILE
 MIN_PERIODIC_CONTRIBUTIONS = config.MIN_PERIODIC_CONTRIBUTIONS
 MAX_FORMAL_WARNINGS = config.MAX_FORMAL_WARNINGS
-CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE 
+CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE
 
 
 
@@ -33,18 +34,20 @@ async def test(interaction: discord.Interaction):
 
 @bot.tree.command(name="panel", description="Show the panel")
 async def panel(interaction: discord.Interaction):
-    calculate_button = Button(label="Total Contributions", style=discord.ButtonStyle.blurple, custom_id="display_total_contributions")
-    warnings_button = Button(label="Total FWs", style=discord.ButtonStyle.red, custom_id="display_total_formal_warnings")
-    importance_button = Button(label="Contribution Importance", style=discord.ButtonStyle.green, custom_id="display_contribution_importance")  # New button
+    calculate_button = Button(label="Total Contribs Report", style=discord.ButtonStyle.blurple, custom_id="display_total_contributions")
+    warnings_button = Button(label="Total FWs Report", style=discord.ButtonStyle.red, custom_id="display_total_formal_warnings")
+    importance_button = Button(label="Contribs Imp Report", style=discord.ButtonStyle.green, custom_id="display_contribution_importance")
+    add_importance_instruction_button = Button(label="Add Contribs Imp", style=discord.ButtonStyle.grey, custom_id="add_importance_instruction")
     
     view = View()
     view.add_item(calculate_button)
     view.add_item(warnings_button)
-    view.add_item(importance_button) 
+    view.add_item(importance_button)
+    view.add_item(add_importance_instruction_button)
     await interaction.response.send_message(view=view)
 
 @bot.tree.command(name="add_contribution_importance", description="Tag a member's contribution with an importance level")
-@app_commands.describe(member="The member to tag", importance="The importance level of the contribution")
+@app_commands.describe(member="The member to tag", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)")
 @app_commands.choices(importance=[
     app_commands.Choice(name='critical', value='critical'),
     app_commands.Choice(name='significant', value='significant'),
@@ -52,20 +55,27 @@ async def panel(interaction: discord.Interaction):
     app_commands.Choice(name='moderate', value='moderate'),
     app_commands.Choice(name='minor', value='minor')
 ])
-async def add_contribution_importance(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str]):
-
-    valid_importance_levels = ['minor', 'moderate', 'notable', 'significant', 'critical']
-    if importance.value not in valid_importance_levels:
-        await interaction.response.send_message(f"Invalid importance level. Please choose from {', '.join(valid_importance_levels)}.", ephemeral=True)
+async def add_contribution_importance(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str], number: int = 1):
+    if interaction.guild is None:
+        await interaction.response.send_message("This command cannot be used in private messages.", ephemeral=True)
+        return
+    elif interaction.guild.id != SERVER_ID:
+        await interaction.response.send_message("This command can only be used within the specific server.", ephemeral=True)
+        return
+        
+    if not is_admin(interaction):
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
         return
     
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    issuer = interaction.user.name  
-    author_id = str(member.id)
-    author = next((a for a in AUTHORS_LIST if DISCORD_USER_IDS_LIST[AUTHORS_LIST.index(a)] == author_id), None)
-    update_contribution_importance(author, issuer, importance.value, now)
+    issuer = interaction.user.name
 
-    await interaction.response.send_message(f"`{importance.name}` `+ 1` to {member.mention}'s contributions.", ephemeral=False)
+    success = await update_contribution_importance(interaction, member.id, issuer, importance.value, now, number)
+
+    if success:
+        number_with_sign = f"+{number}" if number > 0 else str(number)
+        await interaction.response.defer(ephemeral=False)
+        await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contributions.")
 
 activity_counts = {
     'Pull request opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST}),
@@ -90,40 +100,62 @@ async def background_task():
             await send_report(CURRENT_STYLE)
         await asyncio.sleep(1)  # Sleep interval between checks
 
-def update_contribution_importance(author, issuer, importance, issued_time):
+def is_admin(interaction: discord.Interaction) -> bool:
+    if interaction.guild:
+        member = interaction.guild.get_member(interaction.user.id)
+        return member.guild_permissions.administrator
+    else:
+        return False
+
+async def update_contribution_importance(interaction, author_id, issuer, importance, issued_time, number=1):
+    success = False
+    author_name = None
+
+    # Attempt to match the author_id to an author_name
+    for idx, discord_id in enumerate(DISCORD_USER_IDS_LIST):
+        if str(discord_id) == str(author_id):
+            author_name = AUTHORS_LIST[idx]
+            break
+
+    if author_name is None:
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(f"Could not find an author name for the given ID: {author_id}")
+        return success
+
     try:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'r+') as file:
             try:
                 data = json.load(file)
-            except json.JSONDecodeError:  # Handle empty file
+            except json.JSONDecodeError:
                 data = []
-            
-            record = next((item for item in data if item['author'] == author), None)
+
+            record = next((item for item in data if item['author'] == author_name), None)
             if record:
-                if importance in record:
-                    record[importance] += 1
-                else:
-                    record[importance] = 1
+                record[importance] = record.get(importance, 0) + number
             else:
                 data.append({
-                    'author': author,
+                    'author': author_name,
                     'issued_time': issued_time,
                     'issuer': issuer,
-                    importance: 1
+                    importance: number
                 })
             
             file.seek(0)
-            file.truncate(0)  # Clear the file before rewriting
+            file.truncate(0)
             json.dump(data, file, indent=4)
+        success = True
     except FileNotFoundError:
+        # Now we're sure author_name is defined and valid
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'w') as file:
-            initial_data = [{
-                'author': author,
+            json.dump([{
+                'author': author_name,  # Safe to use here
                 'issued_time': issued_time,
                 'issuer': issuer,
-                importance: 1
-            }]
-            json.dump(initial_data, file, indent=4)
+                importance: number
+            }], file, indent=4)
+        success = True
+
+    return success
 
 async def calculate_and_display_contribution_importance(channel, interaction=None):
     importance_counts = defaultdict(lambda: defaultdict(int))
@@ -145,9 +177,18 @@ async def calculate_and_display_contribution_importance(channel, interaction=Non
     except FileNotFoundError:
         print("Contribution importance data file not found.")
     
-    # Generate and send the report
+    try:
+        with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
+            reports = json.load(file)
+    except FileNotFoundError:
+        await channel.send("Periodic contributions history file not found. Need periodic contributions history to generate the contribution importance report.")
+        return
+
+    start_time_str = min(report['start_time'] for report in reports)
+    end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     embed_description = generate_embed_description_for_importance(CURRENT_STYLE, importance_counts)
-    embed = discord.Embed(title="Contribution Importance Report", description=embed_description, color=0x4895EF)
+    embed = discord.Embed(title=f"Contribution Importance Report\n\n`{start_time_str}` to `{end_time_str}`", description=embed_description, color=0x4895EF)
     toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_importance_style")
     
     view = View()
@@ -483,7 +524,16 @@ async def calculate_and_display_total_contributions(channel, interaction=None, t
 async def on_interaction(interaction):
     global CURRENT_STYLE
     if interaction.type == discord.InteractionType.component:
-        if interaction.data.get('custom_id') == "toggle_importance_style":
+        if interaction.data.get('custom_id') == "add_importance_instruction":
+            instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribution_importance`. "
+            instruction_message += "You'll need to specify the member, the importance level of their contribution, and the number of contributions at that level.\n\n"
+            instruction_message += "Example 1: `/add_contribution_importance member:@User importance:critical number:2`.\n\n"
+            instruction_message += "Example 2: `/add_contribution_importance member:@User importance:notable number:-1`.\n\n"
+            instruction_message += "**Important Restrictions**:\n"
+            instruction_message += "- **Server Limitation**: This command is exclusive to the **CruxAbyss** server.\n"
+            instruction_message += "- **Permission Requirement**: Only **admins** are authorized to use this command."
+            await interaction.response.send_message(instruction_message, ephemeral=True)
+        elif interaction.data.get('custom_id') == "toggle_importance_style":
             await interaction.response.defer()
             CURRENT_STYLE = not CURRENT_STYLE
             await calculate_and_display_contribution_importance(interaction.channel, interaction=interaction)
