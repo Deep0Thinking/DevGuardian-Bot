@@ -23,6 +23,7 @@ FORMAL_WARNINGS_FILE = config.FORMAL_WARNINGS_FILE
 MIN_PERIODIC_CONTRIBUTIONS = config.MIN_PERIODIC_CONTRIBUTIONS
 MAX_FORMAL_WARNINGS = config.MAX_FORMAL_WARNINGS
 CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE
+CORE_MEMBER_ROLE_NAME = config.CORE_MEMBER_ROLE_NAME
 
 
 
@@ -46,7 +47,7 @@ async def panel(interaction: discord.Interaction):
     view.add_item(add_importance_instruction_button)
     await interaction.response.send_message(view=view)
 
-@bot.tree.command(name="add_contribution_importance", description="Tag a member's contribution with an importance level")
+@bot.tree.command(name="add_contribs_imp", description="Tag a member's contribution with an importance level")
 @app_commands.describe(member="The member to tag", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)")
 @app_commands.choices(importance=[
     app_commands.Choice(name='critical', value='critical'),
@@ -55,7 +56,7 @@ async def panel(interaction: discord.Interaction):
     app_commands.Choice(name='moderate', value='moderate'),
     app_commands.Choice(name='minor', value='minor')
 ])
-async def add_contribution_importance(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str], number: int = 1):
+async def add_contribs_imp(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str], number: int = 1):
     if interaction.guild is None:
         await interaction.response.send_message("This command cannot be used in private messages.", ephemeral=True)
         return
@@ -70,12 +71,46 @@ async def add_contribution_importance(interaction: discord.Interaction, member: 
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     issuer = interaction.user.name
 
-    success = await update_contribution_importance(interaction, member.id, issuer, importance.value, now, number)
+    author_name = await update_contribution_importance(interaction, member.id, issuer, importance.value, now, number)
 
-    if success:
+    if author_name:
         number_with_sign = f"+{number}" if number > 0 else str(number)
         await interaction.response.defer(ephemeral=False)
         await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contributions.")
+        if importance.value == 'significant' or importance.value == 'critical':
+            with open(FORMAL_WARNINGS_FILE, 'r') as file:
+                warnings_data = json.load(file)
+                total_warnings = 0
+                for data in warnings_data:
+                    if data['author'] != author_name:
+                        continue
+                    total_warnings += data['warning_count']
+                
+                if total_warnings > 0:
+
+                    new_warning_record = {
+                        "author": author_name,
+                        "warning_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        "warning_count": -1 
+                    }
+                    warnings_data.append(new_warning_record)
+                    
+                    with open(FORMAL_WARNINGS_FILE, 'w') as file:
+                        json.dump(warnings_data, file, indent=4)
+
+                    await interaction.followup.send(f"📝 Formal Warning Adjustment 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
+                
+
+            qualifies_for_core_member, _, _ = await check_core_member_qualification(author_name)
+
+            if qualifies_for_core_member:
+                core_member_role = discord.utils.get(interaction.guild.roles, name=CORE_MEMBER_ROLE_NAME)
+                if core_member_role and core_member_role not in member.roles:
+                    await member.add_roles(core_member_role)
+                    await interaction.followup.send(f"🌟 Core Member Designation 🌟\n\n{member.mention} has made `4` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
+                else:
+                    print(f"Role '{CORE_MEMBER_ROLE_NAME}' not found or member already has the role.")
+        
 
 activity_counts = {
     'Pull request opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST}),
@@ -106,21 +141,20 @@ def is_admin(interaction: discord.Interaction) -> bool:
         return member.guild_permissions.administrator
     else:
         return False
-
-async def update_contribution_importance(interaction, author_id, issuer, importance, issued_time, number=1):
-    success = False
-    author_name = None
-
-    # Attempt to match the author_id to an author_name
+    
+def id_to_name(author_id):
     for idx, discord_id in enumerate(DISCORD_USER_IDS_LIST):
         if str(discord_id) == str(author_id):
-            author_name = AUTHORS_LIST[idx]
-            break
+            return AUTHORS_LIST[idx]
+    return None
+
+async def update_contribution_importance(interaction, author_id, issuer, importance, issued_time, number=1):
+    author_name = id_to_name(author_id)
 
     if author_name is None:
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(f"Could not find an author name for the given ID: {author_id}")
-        return success
+        return author_name
 
     try:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'r+') as file:
@@ -143,9 +177,8 @@ async def update_contribution_importance(interaction, author_id, issuer, importa
             file.seek(0)
             file.truncate(0)
             json.dump(data, file, indent=4)
-        success = True
+
     except FileNotFoundError:
-        # Now we're sure author_name is defined and valid
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'w') as file:
             json.dump([{
                 'author': author_name,  # Safe to use here
@@ -153,9 +186,26 @@ async def update_contribution_importance(interaction, author_id, issuer, importa
                 'issuer': issuer,
                 importance: number
             }], file, indent=4)
-        success = True
 
-    return success
+    return author_name
+
+async def check_core_member_qualification(author_name):
+    try:
+        with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        print("Contribution importance file not found.")
+        return False, 0, 0
+
+    total_significant = 0
+    total_critical = 0
+    for record in data:
+        if record['author'] == author_name:
+            total_significant += record.get('significant', 0)
+            total_critical += record.get('critical', 0)
+
+    qualifies_for_core_member = total_significant >= 4 or total_critical >= 1
+    return qualifies_for_core_member, total_significant, total_critical
 
 async def calculate_and_display_contribution_importance(channel, interaction=None):
     importance_counts = defaultdict(lambda: defaultdict(int))
@@ -239,7 +289,7 @@ def save_formal_warnings(authors_list, warning_time=None):
             with open(FORMAL_WARNINGS_FILE, 'r+') as file:
                 try:
                     data = json.load(file)
-                except json.JSONDecodeError:  # Handle empty file
+                except json.JSONDecodeError:
                     data = []
                 # Check if the author already has a warning on the same time to prevent duplicates
                 existing_warning = next((item for item in data if item['author'] == author_name and item['warning_time'] == warning_time), None)
@@ -259,9 +309,7 @@ async def total_formal_warnings_report(channel, interaction=None):
         with open(FORMAL_WARNINGS_FILE, 'r') as file:
             warnings_data = json.load(file)
     except FileNotFoundError:
-        warnings_data = []  # Assume no data if file not found
-        await channel.send("Formal warnings history file not found.")
-        return
+        warnings_data = []  
 
     warnings_count = {author: 0 for author in AUTHORS_LIST}
     members_to_expel = []
@@ -269,8 +317,9 @@ async def total_formal_warnings_report(channel, interaction=None):
     for warning in warnings_data:
         author = warning['author']
         if author in warnings_count:  # Ensure the author is in our list
-            warnings_count[author] += 1
-            if warnings_count[author] > MAX_FORMAL_WARNINGS and author not in members_to_expel:
+            warnings_count[author] += warning['warning_count']
+    for author in warnings_count:
+        if warnings_count[author] > MAX_FORMAL_WARNINGS and author not in members_to_expel:
                 members_to_expel.append(author)
                 members_to_expel_index.append(AUTHORS_LIST.index(author))
 
@@ -380,7 +429,7 @@ def generate_embed_description(style, activity_counts_param, include_warnings=Tr
         warning_members = ", ".join([f"`{author}`" for author in authors_with_warnings])
         warning_members_ID = ", ".join([f"<@{DISCORD_USER_IDS_LIST[author_index]}>" for author_index in authors_with_warnings_index])
         embed_description += "\n**Formal Warnings Issued**\n\n"
-        embed_description += f"{warning_members_ID if style else warning_members} received `1` **formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
+        embed_description += f"{warning_members_ID if style else warning_members} **received** `1` **formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
 
     return (embed_description, authors_with_warnings) if include_warnings else embed_description
     
@@ -525,10 +574,10 @@ async def on_interaction(interaction):
     global CURRENT_STYLE
     if interaction.type == discord.InteractionType.component:
         if interaction.data.get('custom_id') == "add_importance_instruction":
-            instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribution_importance`. "
+            instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribs_imp`. "
             instruction_message += "You'll need to specify the member, the importance level of their contribution, and the number of contributions at that level.\n\n"
-            instruction_message += "Example 1: `/add_contribution_importance member:@User importance:critical number:2`.\n\n"
-            instruction_message += "Example 2: `/add_contribution_importance member:@User importance:notable number:-1`.\n\n"
+            instruction_message += "Example 1: `/add_contribs_imp member:@User importance:critical number:2`.\n\n"
+            instruction_message += "Example 2: `/add_contribs_imp member:@User importance:notable number:-1`.\n\n"
             instruction_message += "**Important Restrictions**:\n"
             instruction_message += "- **Server Limitation**: This command is exclusive to the **CruxAbyss** server.\n"
             instruction_message += "- **Permission Requirement**: Only **admins** are authorized to use this command."
