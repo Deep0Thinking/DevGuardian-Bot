@@ -4,8 +4,11 @@
 from datetime import timedelta
 
 
-# ID of the Discord channel to send reports to
+# ID of the Discord channel to send periodic reports to
 CHANNEL_ID = 
+
+# ID of the Discord server
+SERVER_ID = 
 
 # Token for the Discord bot
 BOT_TOKEN = ''
@@ -20,13 +23,13 @@ DISCORD_USER_IDS_LIST = ["",]
 CURRENT_STYLE = False 
 
 # Time interval for periodic reports (weeks=? or days=? or hours=? or minutes=? or seconds=?)
-REPORT_INTERVAL = timedelta(seconds=10)
+REPORT_INTERVAL = timedelta(days=1)
 
 # Minimum number of contributions to be considered for periodic reports
-MIN_PERIODIC_CONTRIBUTIONS = 
+MIN_PERIODIC_CONTRIBUTIONS = 1
 
 # Maximum number of formal warnings before being expelled
-MAX_FORMAL_WARNINGS = 
+MAX_FORMAL_WARNINGS = 1
 
 # Periodic contributions history file path
 PERIODIC_CONTRIBUTIONS_HISTORY_FILE = 'periodic_contributions_history.json'
