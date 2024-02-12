@@ -31,6 +31,9 @@ MIN_PERIODIC_CONTRIBUTIONS = 1
 # Maximum number of formal warnings before being expelled
 MAX_FORMAL_WARNINGS = 1
 
+# Core member role name
+CORE_MEMBER_ROLE_NAME = "Core Member"
+
 # Periodic contributions history file path
 PERIODIC_CONTRIBUTIONS_HISTORY_FILE = 'periodic_contributions_history.json'
 
