@@ -13,11 +13,23 @@ SERVER_ID =
 # Token for the Discord bot
 BOT_TOKEN = ''
 
+# Token for the GitHub API
+GITHUB_TOKEN = ''
+
+# Doc URL for the GitHub API
+DOC_URL = ''
+
 # List of predefined authors to track
 AUTHORS_LIST = ["",]
 
 # List of corresponding Discord userID
 DISCORD_USER_IDS_LIST = ["",]
+
+# Areas for contributions
+AREAS_LIST = ["Art", "Community Management", "Marketing and Public Relations", "Narrative and Writing", "Programming", "Project Management", "Quality Assurance", "Sound and Music", "Technical Art", "UI/UX Design"]
+
+# Importance levels for contributions
+IMPORTANCES_LIST = ['5️⃣ critical', '4️⃣ significant', '3️⃣ notable', '2️⃣ moderate', '1️⃣ minor']
 
 # Current style for report formatting; False for table-like, True for alternate style
 CURRENT_STYLE = False 
@@ -45,3 +57,6 @@ FORMAL_WARNINGS_FILE = 'formal_warnings.json'
 
 # Contribution importance file path
 CONTRIBUTION_IMPORTANCE_FILE = 'contribution_importance.json'
+
+# Temporary PR issue records file path
+TEMPORARY_PR_ISSUE_RECORDS_FILE = 'temporary_pr_issue_records.json'

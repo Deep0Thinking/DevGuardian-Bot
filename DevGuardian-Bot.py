@@ -5,8 +5,10 @@ from discord import app_commands
 from collections import defaultdict
 from datetime import datetime
 import asyncio
+import aiohttp
 import json
 import config
+import re
 
 
 
@@ -24,6 +26,11 @@ MIN_PERIODIC_CONTRIBUTIONS = config.MIN_PERIODIC_CONTRIBUTIONS
 MAX_FORMAL_WARNINGS = config.MAX_FORMAL_WARNINGS
 CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE
 CORE_MEMBER_ROLE_NAME = config.CORE_MEMBER_ROLE_NAME
+GITHUB_TOKEN = config.GITHUB_TOKEN
+DOC_URL = config.DOC_URL
+TEMPORARY_PR_ISSUE_RECORDS_FILE = config.TEMPORARY_PR_ISSUE_RECORDS_FILE
+IMPORTANCES_LIST = config.IMPORTANCES_LIST
+AREAS_LIST = config.AREAS_LIST
 
 
 
@@ -32,6 +39,24 @@ bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 @bot.tree.command(name="test", description="Test the command")
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Test command executed.") # add `ephemeral=True` to make the response `Only you can see this`.
+
+@bot.tree.command(name="license", description="Show a specific section of the license")
+@app_commands.describe(section="The section number of the license to display")
+async def license(interaction: discord.Interaction, section: str):
+
+    license_doc = await fetch_license(DOC_URL, GITHUB_TOKEN)
+    extracted_section = extract_section(license_doc, section)
+    messages = split_message(extracted_section, 2000 - 3)
+
+    if not messages:
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(f"Section `{section}` not found. Please ensure the section number is correct and try again.")
+        return
+    
+    await interaction.response.defer()
+    for msg in messages:
+        msg = f"```{msg}```"
+        await interaction.followup.send(msg)
 
 @bot.tree.command(name="panel", description="Show the panel")
 async def panel(interaction: discord.Interaction):
@@ -50,11 +75,11 @@ async def panel(interaction: discord.Interaction):
 @bot.tree.command(name="add_contribs_imp", description="Tag a member's contribution with an importance level")
 @app_commands.describe(member="The member to tag", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)")
 @app_commands.choices(importance=[
-    app_commands.Choice(name='critical', value='critical'),
-    app_commands.Choice(name='significant', value='significant'),
-    app_commands.Choice(name='notable', value='notable'),
-    app_commands.Choice(name='moderate', value='moderate'),
-    app_commands.Choice(name='minor', value='minor')
+    app_commands.Choice(name='5️⃣ critical', value='5️⃣ critical'),
+    app_commands.Choice(name='4️⃣ significant', value='4️⃣ significant'),
+    app_commands.Choice(name='3️⃣ notable', value='3️⃣ notable'),
+    app_commands.Choice(name='2️⃣ moderate', value='2️⃣ moderate'),
+    app_commands.Choice(name='1️⃣ minor', value='1️⃣ minor')
 ])
 async def add_contribs_imp(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str], number: int = 1):
     if interaction.guild is None:
@@ -71,13 +96,15 @@ async def add_contribs_imp(interaction: discord.Interaction, member: discord.Mem
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     issuer = interaction.user.name
 
-    author_name = await update_contribution_importance(interaction, member.id, issuer, importance.value, now, number)
+    await update_contribution_importance(interaction, member.id, issuer, importance.value, now, number)
+
+    author_name = id_to_name(member.id)
 
     if author_name:
         number_with_sign = f"+{number}" if number > 0 else str(number)
         await interaction.response.defer(ephemeral=False)
         await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contributions.")
-        if importance.value == 'significant' or importance.value == 'critical':
+        if importance.value == '4️⃣ significant' or importance.value == '5️⃣ critical':
             with open(FORMAL_WARNINGS_FILE, 'r') as file:
                 warnings_data = json.load(file)
                 total_warnings = 0
@@ -98,7 +125,7 @@ async def add_contribs_imp(interaction: discord.Interaction, member: discord.Mem
                     with open(FORMAL_WARNINGS_FILE, 'w') as file:
                         json.dump(warnings_data, file, indent=4)
 
-                    await interaction.followup.send(f"📝 Formal Warning Adjustment 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
+                    await interaction.followup.send(f"📝 **Formal Warning Adjustment** 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
                 
 
             qualifies_for_core_member, _, _ = await check_core_member_qualification(author_name)
@@ -107,7 +134,7 @@ async def add_contribs_imp(interaction: discord.Interaction, member: discord.Mem
                 core_member_role = discord.utils.get(interaction.guild.roles, name=CORE_MEMBER_ROLE_NAME)
                 if core_member_role and core_member_role not in member.roles:
                     await member.add_roles(core_member_role)
-                    await interaction.followup.send(f"🌟 Core Member Designation 🌟\n\n{member.mention} has made `4` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
+                    await interaction.followup.send(f"🌟 **Core Member Designation** 🌟\n\n{member.mention} has made `5` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
                 else:
                     print(f"Role '{CORE_MEMBER_ROLE_NAME}' not found or member already has the role.")
         
@@ -133,7 +160,7 @@ async def background_task():
     while not bot.is_closed():
         if datetime.now() - last_reset_time >= REPORT_INTERVAL:
             await send_report(CURRENT_STYLE)
-        await asyncio.sleep(1)  # Sleep interval between checks
+        await asyncio.sleep(1)
 
 def is_admin(interaction: discord.Interaction) -> bool:
     if interaction.guild:
@@ -148,46 +175,167 @@ def id_to_name(author_id):
             return AUTHORS_LIST[idx]
     return None
 
-async def update_contribution_importance(interaction, author_id, issuer, importance, issued_time, number=1):
-    author_name = id_to_name(author_id)
+def name_to_id(author):
+    for idx, name in enumerate(AUTHORS_LIST):
+        if name == author:
+            return DISCORD_USER_IDS_LIST[idx]
+    return None
 
+async def fetch_and_process_github_data(api_url, record_id, record_type, author_name):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api_url, headers={
+            "Authorization": f"token {config.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }) as response:
+            if response.status == 200:
+                data = await response.json()
+                labels = [label['name'] for label in data.get("labels", [])]
+                state = data.get("state", "")
+                merged = data.get("merged", False)
+
+                if state == "closed" and (not record_type == "Pull Request" or merged):
+                    label_conditions = [
+                        any(label in labels for label in IMPORTANCES_LIST),
+                        any(label in labels for label in AREAS_LIST)
+                    ]
+                    if all(label_conditions) and len(labels) == 2:
+                        await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        print(f"Triggering /add_contribs_imp for {author_name} based on labels: {labels}")
+                        await remove_record_from_temp_file(record_id, record_type)
+                    else:
+                        print("Labels do not meet the conditions.")
+            else:
+                print(f"Failed to fetch data for {api_url}. Status code: {response.status}")
+
+async def remove_record_from_temp_file(record_id, record_type):
+    try:
+        with open(config.TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r+') as file:
+            records = json.load(file)
+            records = [record for record in records if not (record['id'] == record_id and record['type'] == record_type)]
+            file.seek(0)
+            file.truncate()
+            json.dump(records, file, indent=4)
+    except FileNotFoundError:
+        print("Temporary file not found.")
+
+async def fetch_license(url, token):
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3.raw"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                text = await response.text()
+                return text
+            else:
+                return f"Failed to fetch the license documentation. HTTP Status: {response.status}"
+
+def split_message(message, length=2000):
+    return [message[i:i+length] for i in range(0, len(message), length)]
+
+def extract_section(document, section_number):
+    lines = document.split('\n')
+    section_start = f"{section_number}"
+    section_content = []
+    recording = False
+
+    print(f"Looking for section: '{section_start}'")
+
+    def is_new_section(line, current_section):
+        # Splitting current section for comparison
+        current_parts = current_section.split('.')
+        current_main = int(current_parts[0]) if current_parts[0].isdigit() else 0
+        current_sub = int(current_parts[1]) if len(current_parts) > 1 and current_parts[1].isdigit() else 0
+        
+        # Extracting potential section number
+        potential_parts = line.partition(' ')[0].split('.')
+        potential_main = int(potential_parts[0]) if potential_parts[0].isdigit() else 0
+        potential_sub = int(potential_parts[1]) if len(potential_parts) > 1 and potential_parts[1].isdigit() else 0
+        
+        # If the potential section is numerically higher than the current, it's a new section
+        if potential_main > current_main:
+            return True
+        elif potential_main == current_main:
+            return potential_sub > current_sub
+        return False
+
+    for line in lines:
+        if line.strip().startswith(section_start):
+            print(f"Started recording at: '{line.strip()[:50]}'")
+            recording = True
+            section_content.append(line)
+        elif recording and is_new_section(line.strip(), section_start[:-1]):
+            print(f"Stopping recording at new section: '{line.strip()[:50]}'")
+            break
+        elif recording:
+            section_content.append(line)
+
+    if not section_content:
+        print("No content found for the specified section. Ensure section number is in the document and formatted as expected.")
+        return ""
+    else:
+        print(f"Content found for section {section_number}.")
+        return '\n'.join(section_content)
+
+async def update_contribution_importance(interaction, author_id, issuer, labels, issued_time, number=1):
+    
+    if len(labels) != 2:
+        raise ValueError("Labels list must be of length 2.")
+    
+    # Determine which label is from which predefined list
+    importance_label = next((label for label in labels if label in IMPORTANCES_LIST), None)
+    area_label = next((label for label in labels if label in AREAS_LIST), None)
+
+    if not importance_label or not area_label:
+        raise ValueError("One label must be from the importance levels and the other from the contribution areas.")
+    
+    author_name = id_to_name(author_id)
     if author_name is None:
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(f"Could not find an author name for the given ID: {author_id}")
-        return author_name
-
+        return
+    
     try:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'r+') as file:
             try:
                 data = json.load(file)
             except json.JSONDecodeError:
                 data = []
-
+            
             record = next((item for item in data if item['author'] == author_name), None)
             if record:
-                record[importance] = record.get(importance, 0) + number
+                # Update existing record
+                record['area'] = area_label
+                record['importance'] = importance_label
+                record['count'] = str(int(record.get('count', '0')) + number)
             else:
+                # Create new record
                 data.append({
                     'author': author_name,
                     'issued_time': issued_time,
                     'issuer': issuer,
-                    importance: number
+                    'area': area_label,
+                    'importance': importance_label,
+                    'count': str(number)
                 })
             
             file.seek(0)
-            file.truncate(0)
+            file.truncate()
             json.dump(data, file, indent=4)
-
+            
     except FileNotFoundError:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'w') as file:
             json.dump([{
-                'author': author_name,  # Safe to use here
+                'author': author_name,
                 'issued_time': issued_time,
                 'issuer': issuer,
-                importance: number
+                'area': area_label,
+                'importance': importance_label,
+                'count': str(number)
             }], file, indent=4)
 
-    return author_name
+    print("Contribution updated!")
 
 async def check_core_member_qualification(author_name):
     try:
@@ -201,23 +349,23 @@ async def check_core_member_qualification(author_name):
     total_critical = 0
     for record in data:
         if record['author'] == author_name:
-            total_significant += record.get('significant', 0)
-            total_critical += record.get('critical', 0)
+            total_significant += record.get('4️⃣ significant', 0)
+            total_critical += record.get('5️⃣ critical', 0)
 
-    qualifies_for_core_member = total_significant >= 4 or total_critical >= 1
+    qualifies_for_core_member = total_significant >= 5 or total_critical >= 1
     return qualifies_for_core_member, total_significant, total_critical
 
 async def calculate_and_display_contribution_importance(channel, interaction=None):
     importance_counts = defaultdict(lambda: defaultdict(int))
     for author in AUTHORS_LIST:
-        for importance in ['critical', 'significant', 'notable', 'moderate', 'minor']:
+        for importance in IMPORTANCES_LIST:
             importance_counts[author][importance] = 0
 
     try:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
             contributions_data = json.load(file)
             for record in contributions_data:
-                # Match author case-insensitively and update counts
+
                 author_lower = {a.lower(): a for a in AUTHORS_LIST}
                 record_author = author_lower.get(record['author'].lower())
                 if record_author:
@@ -259,7 +407,7 @@ def generate_embed_description_for_importance(style, importance_counts):
             counts = importance_counts[author]
             authors_contributions_importance_index.append(index)
             embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n"
-            embed_description += "".join(f"> {importance.capitalize()}: `{counts[importance]}`\n" for importance in ['critical', 'significant', 'notable', 'moderate', 'minor'])
+            embed_description += "".join(f"> {importance.capitalize()}: `{counts[importance]}`\n" for importance in IMPORTANCES_LIST)
             
     else:  # Table-like style
         embed_description += "```"
@@ -269,7 +417,7 @@ def generate_embed_description_for_importance(style, importance_counts):
         for author in AUTHORS_LIST: 
             counts = importance_counts[author]
             row = f"{author: <18} | "
-            row += " | ".join([f"{counts[importance]: <3}" for importance in ['critical', 'significant', 'notable', 'moderate', 'minor']])
+            row += " | ".join([f"{counts[importance]: <3}" for importance in IMPORTANCES_LIST])
             embed_description += row + "\n"
         embed_description += "```"
     return embed_description
@@ -500,20 +648,54 @@ async def on_message(message):
                     print(f"Field {i + 1}: {field.name} - {field.value}")
             print("----- Embed Info End -----")
 
+            title = embed.title if embed.title else ""
             embed_author_name = embed.author.name if embed.author else "No author"
-            print(f"Embed author: {embed_author_name}")
             
-            # Check if the embed author is in the predefined list
-            if embed_author_name in AUTHORS_LIST:
-                title = embed.title if embed.title else ""
-                if "Pull request opened" in title:
-                    activity_counts['Pull request opened'][embed_author_name] += 1
-                    print(f"Pull request `+ 1` for {embed_author_name}")
-                elif "Issue opened" in title:
-                    activity_counts['Issue opened'][embed_author_name] += 1
-                    print(f"Issue count `+ 1` for {embed_author_name}")
-            else:
-                print(f"Author {embed_author_name} not in predefined list or not found in embed.")
+            if "Issue opened:" in title or "Pull request opened:" in title:
+                match = re.search(r'#(\d+)', title)
+                if match:
+                    record_id = int(match.group(1))
+                else:
+                    print("Error extracting the issue/PR ID.")
+                    continue
+
+                record_type = "Issue" if "Issue opened:" in title else "Pull Request"
+                record_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                record = {
+                    'id': record_id,
+                    'type': record_type,
+                    'time': record_time,
+                    'author': embed_author_name
+                }
+
+                try:
+                    with open(config.TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r') as file:
+                        records = json.load(file)
+                except FileNotFoundError:
+                    records = []
+
+                records.append(record)
+
+                with open(config.TEMPORARY_PR_ISSUE_RECORDS_FILE, 'w') as file:
+                    json.dump(records, file, indent=4)
+            if "Issue closed:" in title or "Pull request closed:" in title:
+                # Extract the ID and type from the title
+                match = re.search(r'#(\d+)', title)
+                if match:
+                    record_id = int(match.group(1))
+                    record_type = "Issue" if "Issue closed:" in title else "Pull Request"
+                    # Extract the org and repo from the URL
+                    url_match = re.search(r'https://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)', embed.url)
+                    if url_match:
+                        org, repo, _, _ = url_match.groups()
+                        api_url = f"https://api.github.com/repos/{org}/{repo}/{record_type.lower()}s/{record_id}"
+                        await fetch_and_process_github_data(api_url, record_id, record_type, embed_author_name)
+                    else:
+                        print("Error extracting URL details.")
+                else:
+                    print("Error extracting the issue/PR ID.")
+
 
 async def calculate_and_display_total_contributions(channel, interaction=None, toggle=False):
     if toggle:
@@ -576,11 +758,11 @@ async def on_interaction(interaction):
         if interaction.data.get('custom_id') == "add_importance_instruction":
             instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribs_imp`. "
             instruction_message += "You'll need to specify the member, the importance level of their contribution, and the number of contributions at that level.\n\n"
-            instruction_message += "Example 1: `/add_contribs_imp member:@User importance:critical number:2`.\n\n"
-            instruction_message += "Example 2: `/add_contribs_imp member:@User importance:notable number:-1`.\n\n"
+            instruction_message += "Example 1: `/add_contribs_imp member:@User importance:5️⃣ critical number:2`.\n\n"
+            instruction_message += "Example 2: `/add_contribs_imp member:@User importance:3️⃣ notable number:-1`.\n\n"
             instruction_message += "**Important Restrictions**:\n"
             instruction_message += "- **Server Limitation**: This command is exclusive to the **CruxAbyss** server.\n"
-            instruction_message += "- **Permission Requirement**: Only **admins** are authorized to use this command."
+            instruction_message += "- **Permission Requirement**: Only **admin** roles are authorized to use this command."
             await interaction.response.send_message(instruction_message, ephemeral=True)
         elif interaction.data.get('custom_id') == "toggle_importance_style":
             await interaction.response.defer()
