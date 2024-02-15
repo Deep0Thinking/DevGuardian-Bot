@@ -9,6 +9,7 @@ import aiohttp
 import json
 import config
 import re
+import DevGuardian_Bot_functions as DGB
 
 
 
@@ -127,7 +128,6 @@ async def add_contribs_imp(interaction: discord.Interaction, member: discord.Mem
 
                     await interaction.followup.send(f"📝 **Formal Warning Adjustment** 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
                 
-
             qualifies_for_core_member, _, _ = await check_core_member_qualification(author_name)
 
             if qualifies_for_core_member:
@@ -137,7 +137,6 @@ async def add_contribs_imp(interaction: discord.Interaction, member: discord.Mem
                     await interaction.followup.send(f"🌟 **Core Member Designation** 🌟\n\n{member.mention} has made `5` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
                 else:
                     print(f"Role '{CORE_MEMBER_ROLE_NAME}' not found or member already has the role.")
-        
 
 activity_counts = {
     'Pull request opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST}),
@@ -154,6 +153,7 @@ async def on_ready():
     synced = await bot.tree.sync()
     print(f'Synced {len(synced)} command (s)') # Restart your discord to see the changes
     bot.loop.create_task(background_task())
+    bot.loop.create_task(periodic_label_check())  # Start the periodic label check task
 
 async def background_task():
     await bot.wait_until_ready()
@@ -168,7 +168,7 @@ def is_admin(interaction: discord.Interaction) -> bool:
         return member.guild_permissions.administrator
     else:
         return False
-    
+ 
 def id_to_name(author_id):
     for idx, discord_id in enumerate(DISCORD_USER_IDS_LIST):
         if str(discord_id) == str(author_id):
@@ -181,10 +181,38 @@ def name_to_id(author):
             return DISCORD_USER_IDS_LIST[idx]
     return None
 
+async def update_issue_pr(api_url, labels=None, state=None, comment=None):
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {}
+    if labels is not None:
+        data["labels"] = labels
+    if state is not None:
+        data["state"] = state
+    if comment is not None:
+        comment_url = f"{api_url}/comments"
+        async with aiohttp.ClientSession() as session:
+            await session.post(comment_url, headers=headers, json={"body": comment})
+
+    if data:
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(api_url, headers=headers, json=data) as response:
+
+                id = api_url.split('/')[-1]
+
+                if response.status == 200:
+                    print(f"Issue/PR #{id} updated successfully")
+                else:
+                    print(f"Failed to update issue/PR #{id}. Status code: {response.status}")
+                    response_text = await response.text()
+                    print(f"Response body: {response_text}")
+
 async def fetch_and_process_github_data(api_url, record_id, record_type, author_name):
     async with aiohttp.ClientSession() as session:
         async with session.get(api_url, headers={
-            "Authorization": f"token {config.GITHUB_TOKEN}",
+            "Authorization": f"token {GITHUB_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }) as response:
             if response.status == 200:
@@ -194,22 +222,22 @@ async def fetch_and_process_github_data(api_url, record_id, record_type, author_
                 merged = data.get("merged", False)
 
                 if state == "closed" and (not record_type == "Pull Request" or merged):
-                    label_conditions = [
-                        any(label in labels for label in IMPORTANCES_LIST),
-                        any(label in labels for label in AREAS_LIST)
-                    ]
-                    if all(label_conditions) and len(labels) == 2:
+                    if DGB.labels_verification(labels):
                         await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                         print(f"Triggering /add_contribs_imp for {author_name} based on labels: {labels}")
                         await remove_record_from_temp_file(record_id, record_type)
+                    elif len(labels) == 0:
+                        await remove_record_from_temp_file(record_id, record_type)
+                        print("Meaningless issue/PR closed without any labels. Removing from temp file.")
                     else:
+                        await update_issue_pr(api_url, state="open", comment="This issue/PR has been reopened due to incorrect labeling.")
                         print("Labels do not meet the conditions.")
             else:
                 print(f"Failed to fetch data for {api_url}. Status code: {response.status}")
 
 async def remove_record_from_temp_file(record_id, record_type):
     try:
-        with open(config.TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r+') as file:
+        with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r+') as file:
             records = json.load(file)
             records = [record for record in records if not (record['id'] == record_id and record['type'] == record_type)]
             file.seek(0)
@@ -612,6 +640,47 @@ async def send_report(style):
     last_reset_time = current_time
     print(f"Periodic Contributions Report sent: `{start_time_str}` to `{current_time_str}`")
 
+async def periodic_label_check():
+    while True:
+        try:
+            with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r+') as file:
+                records = json.load(file)
+                
+                for record in records:
+                    api_url = record.get('api_url')
+                    if not api_url:
+                        continue
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(api_url, headers={
+                            "Authorization": f"token {GITHUB_TOKEN}",
+                            "Accept": "application/vnd.github.v3+json"
+                        }) as response:
+                            if response.status == 200:
+                                data = await response.json()
+
+                                labels = [label['name'] for label in data.get("labels", [])]
+
+                                valid_labels = DGB.labels_verification(labels)
+                                if labels == ['❔ pending']:
+                                    print("Pending label found. No action taken.")
+                                elif len(labels) == 0:
+                                    print("Meaningless issue/PR without any labels.")
+                                elif valid_labels:
+                                    print("Valid labels found.")
+
+                                    # ????????????????????
+
+                                else:
+                                    await update_issue_pr(api_url, labels=['❔ pending'], comment="This issue/PR has been relabeled as `❔ pending` due to incorrect labeling.")
+                                    print("modified")
+
+        except FileNotFoundError:
+            print("Temporary PR/Issue records file not found.")
+
+        await asyncio.sleep(1800)  # Wait for 30 minutes (1800 seconds) before next iteration
+
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -624,72 +693,54 @@ async def on_message(message):
 
         for embed in message.embeds:
 
-            print("----- Embed Info Begin -----")
-            if embed.title:
-                print(f"Title: {embed.title}")
-            if embed.description:
-                print(f"Description: {embed.description}")
-            if embed.url:
-                print(f"URL: {embed.url}")
-            if embed.timestamp:
-                print(f"Timestamp: {embed.timestamp}")
-            if embed.color:
-                print(f"Color: {embed.color}")
-            if embed.footer:
-                print(f"Footer: {embed.footer.text}")
-            if embed.image:
-                print(f"Image URL: {embed.image.url}")
-            if embed.thumbnail:
-                print(f"Thumbnail URL: {embed.thumbnail.url}")
-            if embed.author:
-                print(f"Author: {embed.author.name}")
-            if embed.fields:
-                for i, field in enumerate(embed.fields):
-                    print(f"Field {i + 1}: {field.name} - {field.value}")
-            print("----- Embed Info End -----")
+            DGB.print_embed_message(embed)
 
             title = embed.title if embed.title else ""
             embed_author_name = embed.author.name if embed.author else "No author"
             
-            if "Issue opened:" in title or "Pull request opened:" in title:
+            if "Issue opened:" in title or "Pull request opened:" in title or "Issue reopened:" in title or "Pull request reopened:" in title:
                 match = re.search(r'#(\d+)', title)
                 if match:
                     record_id = int(match.group(1))
                 else:
                     print("Error extracting the issue/PR ID.")
-                    continue
+                    return
 
-                record_type = "Issue" if "Issue opened:" in title else "Pull Request"
+                record_type = "Issue" if ("Issue opened:" in title or "Issue reopened:" in title) else "Pull Request"
                 record_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
                 record = {
                     'id': record_id,
                     'type': record_type,
                     'time': record_time,
-                    'author': embed_author_name
+                    'author': embed_author_name,
+                    'url': embed.url,
+                    'api_url': DGB.url_to_api_url(embed.url)
                 }
 
                 try:
-                    with open(config.TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r') as file:
+                    with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r') as file:
                         records = json.load(file)
                 except FileNotFoundError:
                     records = []
 
                 records.append(record)
 
-                with open(config.TEMPORARY_PR_ISSUE_RECORDS_FILE, 'w') as file:
+                with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'w') as file:
                     json.dump(records, file, indent=4)
+
+                record_id = int(match.group(1))
+                api_url = DGB.url_to_api_url(embed.url)
+                print(api_url)
+                await update_issue_pr(api_url, labels=['❔ pending'])
+                
             if "Issue closed:" in title or "Pull request closed:" in title:
-                # Extract the ID and type from the title
                 match = re.search(r'#(\d+)', title)
                 if match:
                     record_id = int(match.group(1))
-                    record_type = "Issue" if "Issue closed:" in title else "Pull Request"
-                    # Extract the org and repo from the URL
-                    url_match = re.search(r'https://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)', embed.url)
-                    if url_match:
-                        org, repo, _, _ = url_match.groups()
-                        api_url = f"https://api.github.com/repos/{org}/{repo}/{record_type.lower()}s/{record_id}"
+                    record_type = "Issue" if "Issue" in title else "Pull Request"
+                    api_url = DGB.url_to_api_url(embed.url)
+                    if api_url:
                         await fetch_and_process_github_data(api_url, record_id, record_type, embed_author_name)
                     else:
                         print("Error extracting URL details.")

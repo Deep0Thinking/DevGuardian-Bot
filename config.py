@@ -17,7 +17,7 @@ BOT_TOKEN = ''
 GITHUB_TOKEN = ''
 
 # Doc URL for the GitHub API
-DOC_URL = ''
+DOC_URL = ""
 
 # List of predefined authors to track
 AUTHORS_LIST = ["",]
