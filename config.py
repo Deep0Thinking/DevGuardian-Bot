@@ -59,4 +59,4 @@ FORMAL_WARNINGS_FILE = 'formal_warnings.json'
 CONTRIBUTION_IMPORTANCE_FILE = 'contribution_importance.json'
 
 # Temporary PR issue records file path
-TEMPORARY_PR_ISSUE_RECORDS_FILE = 'temporary_pr_issue_records.json'
+CURRENT_OPEN_PR_ISSUE_FILE = 'current_open_pr_issue.json'

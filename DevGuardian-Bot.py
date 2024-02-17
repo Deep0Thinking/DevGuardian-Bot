@@ -29,7 +29,7 @@ CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE
 CORE_MEMBER_ROLE_NAME = config.CORE_MEMBER_ROLE_NAME
 GITHUB_TOKEN = config.GITHUB_TOKEN
 DOC_URL = config.DOC_URL
-TEMPORARY_PR_ISSUE_RECORDS_FILE = config.TEMPORARY_PR_ISSUE_RECORDS_FILE
+CURRENT_OPEN_PR_ISSUE_FILE = config.CURRENT_OPEN_PR_ISSUE_FILE
 IMPORTANCES_LIST = config.IMPORTANCES_LIST
 AREAS_LIST = config.AREAS_LIST
 
@@ -47,7 +47,7 @@ async def license(interaction: discord.Interaction, section: str):
 
     license_doc = await fetch_license(DOC_URL, GITHUB_TOKEN)
     extracted_section = extract_section(license_doc, section)
-    messages = split_message(extracted_section, 2000 - 3)
+    messages = split_message(extracted_section, 2000 - 10)
 
     if not messages:
         await interaction.response.defer(ephemeral=True)
@@ -153,7 +153,7 @@ async def on_ready():
     synced = await bot.tree.sync()
     print(f'Synced {len(synced)} command (s)') # Restart your discord to see the changes
     bot.loop.create_task(background_task())
-    bot.loop.create_task(periodic_label_check())  # Start the periodic label check task
+    bot.loop.create_task(periodic_open_pr_issue_check())  # Start the periodic label check task
 
 async def background_task():
     await bot.wait_until_ready()
@@ -181,35 +181,8 @@ def name_to_id(author):
             return DISCORD_USER_IDS_LIST[idx]
     return None
 
-async def update_issue_pr(api_url, labels=None, state=None, comment=None):
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    data = {}
-    if labels is not None:
-        data["labels"] = labels
-    if state is not None:
-        data["state"] = state
-    if comment is not None:
-        comment_url = f"{api_url}/comments"
-        async with aiohttp.ClientSession() as session:
-            await session.post(comment_url, headers=headers, json={"body": comment})
-
-    if data:
-        async with aiohttp.ClientSession() as session:
-            async with session.patch(api_url, headers=headers, json=data) as response:
-
-                id = api_url.split('/')[-1]
-
-                if response.status == 200:
-                    print(f"Issue/PR #{id} updated successfully")
-                else:
-                    print(f"Failed to update issue/PR #{id}. Status code: {response.status}")
-                    response_text = await response.text()
-                    print(f"Response body: {response_text}")
-
-async def fetch_and_process_github_data(api_url, record_id, record_type, author_name):
+async def fetch_and_process_github_data(url, record_type, author_name):
+    api_url = DGB.url_to_api_url(url)
     async with aiohttp.ClientSession() as session:
         async with session.get(api_url, headers={
             "Authorization": f"token {GITHUB_TOKEN}",
@@ -221,30 +194,36 @@ async def fetch_and_process_github_data(api_url, record_id, record_type, author_
                 state = data.get("state", "")
                 merged = data.get("merged", False)
 
+                parts = url.split('/')
+                pr_or_issue_id = parts[6]
+
+                # ???????????? consider the pr case with using `check_latest_importance_labeling_action`
                 if state == "closed" and (not record_type == "Pull Request" or merged):
                     if DGB.labels_verification(labels):
                         await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                        print(f"Triggering /add_contribs_imp for {author_name} based on labels: {labels}")
-                        await remove_record_from_temp_file(record_id, record_type)
+                        await remove_record_from_current_open_pr_issue_file(pr_or_issue_id, record_type)
+                        print("blabla")
+                        # ????????????????????
                     elif len(labels) == 0:
-                        await remove_record_from_temp_file(record_id, record_type)
-                        print("Meaningless issue/PR closed without any labels. Removing from temp file.")
+                        await remove_record_from_current_open_pr_issue_file(pr_or_issue_id, record_type)
+                        print("blabla")
+                        # ????????????????????
                     else:
-                        await update_issue_pr(api_url, state="open", comment="This issue/PR has been reopened due to incorrect labeling.")
+                        await DGB.update_pr_issue(url, state="open", comment="This PR/issue has been reopened due to incorrect labeling.")
                         print("Labels do not meet the conditions.")
             else:
                 print(f"Failed to fetch data for {api_url}. Status code: {response.status}")
 
-async def remove_record_from_temp_file(record_id, record_type):
+async def remove_record_from_current_open_pr_issue_file(record_id, record_type):
     try:
-        with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r+') as file:
+        with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r+') as file:
             records = json.load(file)
             records = [record for record in records if not (record['id'] == record_id and record['type'] == record_type)]
             file.seek(0)
             file.truncate()
             json.dump(records, file, indent=4)
     except FileNotFoundError:
-        print("Temporary file not found.")
+        print("Current_open_pr_issue file not found.")
 
 async def fetch_license(url, token):
     headers = {
@@ -271,17 +250,13 @@ def extract_section(document, section_number):
     print(f"Looking for section: '{section_start}'")
 
     def is_new_section(line, current_section):
-        # Splitting current section for comparison
         current_parts = current_section.split('.')
         current_main = int(current_parts[0]) if current_parts[0].isdigit() else 0
         current_sub = int(current_parts[1]) if len(current_parts) > 1 and current_parts[1].isdigit() else 0
-        
-        # Extracting potential section number
         potential_parts = line.partition(' ')[0].split('.')
         potential_main = int(potential_parts[0]) if potential_parts[0].isdigit() else 0
         potential_sub = int(potential_parts[1]) if len(potential_parts) > 1 and potential_parts[1].isdigit() else 0
         
-        # If the potential section is numerically higher than the current, it's a new section
         if potential_main > current_main:
             return True
         elif potential_main == current_main:
@@ -311,7 +286,6 @@ async def update_contribution_importance(interaction, author_id, issuer, labels,
     if len(labels) != 2:
         raise ValueError("Labels list must be of length 2.")
     
-    # Determine which label is from which predefined list
     importance_label = next((label for label in labels if label in IMPORTANCES_LIST), None)
     area_label = next((label for label in labels if label in AREAS_LIST), None)
 
@@ -333,12 +307,10 @@ async def update_contribution_importance(interaction, author_id, issuer, labels,
             
             record = next((item for item in data if item['author'] == author_name), None)
             if record:
-                # Update existing record
                 record['area'] = area_label
                 record['importance'] = importance_label
                 record['count'] = str(int(record.get('count', '0')) + number)
             else:
-                # Create new record
                 data.append({
                     'author': author_name,
                     'issued_time': issued_time,
@@ -492,7 +464,7 @@ async def total_formal_warnings_report(channel, interaction=None):
     members_to_expel_index = []
     for warning in warnings_data:
         author = warning['author']
-        if author in warnings_count:  # Ensure the author is in our list
+        if author in warnings_count: 
             warnings_count[author] += warning['warning_count']
     for author in warnings_count:
         if warnings_count[author] > MAX_FORMAL_WARNINGS and author not in members_to_expel:
@@ -640,45 +612,91 @@ async def send_report(style):
     last_reset_time = current_time
     print(f"Periodic Contributions Report sent: `{start_time_str}` to `{current_time_str}`")
 
-async def periodic_label_check():
+async def periodic_open_pr_issue_check():
     while True:
         try:
-            with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r+') as file:
+            with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
                 records = json.load(file)
-                
-                for record in records:
-                    api_url = record.get('api_url')
-                    if not api_url:
-                        continue
 
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(api_url, headers={
-                            "Authorization": f"token {GITHUB_TOKEN}",
-                            "Accept": "application/vnd.github.v3+json"
-                        }) as response:
-                            if response.status == 200:
-                                data = await response.json()
+            for record in records:
+                url = record.get('url')
+                if not url:
+                    continue
 
-                                labels = [label['name'] for label in data.get("labels", [])]
+                async with aiohttp.ClientSession() as session:
+                    api_url = DGB.url_to_api_url(url)
+                    async with session.get(api_url, headers={
+                        "Authorization": f"token {GITHUB_TOKEN}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            labels = [label['name'] for label in data.get("labels", [])]
 
-                                valid_labels = DGB.labels_verification(labels)
-                                if labels == ['❔ pending']:
-                                    print("Pending label found. No action taken.")
-                                elif len(labels) == 0:
-                                    print("Meaningless issue/PR without any labels.")
-                                elif valid_labels:
-                                    print("Valid labels found.")
+                            if len(labels) == 0:
+                                print("Meaningless PR/issue without any labels.")
 
-                                    # ????????????????????
+                            elif labels == ['❔ pending']:
+                                if (not record['valid_area_labeled_by_author_time']):
+                                    # ????????????????????? send the public notification
+                                    await DGB.update_pr_issue(url, comment="Please add 1 appropriate `Area` label for this PR/issue.")
+                                    record['valid_area_labeled_by_author_time'] = 'Notified'
+                                else:
+                                    print("Area label notification already sent.")
+
+                            elif DGB.area_label_verification(labels):
+                                print("Valid area label found. Awaiting importance label.")
+                                record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                if record.get('valid_importance_labeled_by_reviewers_time') and DGB.check_review_deadline_exceeded(record):
+                                    if len(labels) == 2:
+                                        print("Adding the label `⏰ review deadline exceeded`.")
+                                        new_labels = labels + ['⏰ review deadline exceeded']
+                                        previous_reviewers = record['reviewers']
+                                        previous_reviewers_str = ', @'.join(previous_reviewers)
+                                        # ????????????????????? notify previous reviewers
+                                        new_reviewers = [AUTHORS_LIST[0]]
+                                        new_reviewers_str = ', @'.join(new_reviewers)
+                                        await DGB.update_pr_issue(url, labels=new_labels, reviewers=new_reviewers, comment=f"The review deadline for this PR/issue has been exceeded. New reviewer @{new_reviewers_str} is assigned to this PR/issue. Previous reviewers were: @{previous_reviewers_str}.")
+                                        # ????????????????????? send the public notification
+                                        record['reviewers'] = new_reviewers
+                                        record['previous_reviewers'] = previous_reviewers
+                                        record['review_ddl_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                                    else:
+                                        print("Label `⏰ review deadline exceeded` has already been added.")
+
+                                elif (not record['reviewers']):
+
+                                    current_reviewers = [AUTHORS_LIST[0]]
+                                    current_reviewers_str = ', @'.join(current_reviewers)
+                                    record['reviewers'] = current_reviewers
+                                    await DGB.update_pr_issue(url, reviewers=current_reviewers, comment=f"Reviewer @{current_reviewers_str} is assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.")
+
+                            elif DGB.labels_verification(labels):
+                                if (not record['valid_importance_labeled_by_reviewers_time']):
+                                    current_reviewers = [AUTHORS_LIST[0]]
+                                    current_reviewers_str = ', @'.join(current_reviewers)
+                                    record['reviewers'] = current_reviewers
+                                    record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                    await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has add the `Importance` label to this PR/issue.")
 
                                 else:
-                                    await update_issue_pr(api_url, labels=['❔ pending'], comment="This issue/PR has been relabeled as `❔ pending` due to incorrect labeling.")
-                                    print("modified")
+                                    print("No action needed.")
+
+                            else:
+                                record['labels'] = ['❔ pending']
+                                record['valid_importance_labeled_by_reviewers_time'] = ''
+                                record['valid_area_labeled_by_author_time'] = ''
+                                record['reviewers'] = []
+                                await DGB.update_pr_issue(url, labels=['❔ pending'], comment="This PR/issue has been relabeled as `❔ pending` due to incorrect labeling.")
+
+            with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
+                json.dump(records, file, indent=4)
 
         except FileNotFoundError:
-            print("Temporary PR/Issue records file not found.")
+            print("Current open PR/Issue records file not found.")
 
-        await asyncio.sleep(1800)  # Wait for 30 minutes (1800 seconds) before next iteration
+        await asyncio.sleep(5)  # Wait for 30 minutes (1800 seconds) before next iteration
 
 
 @bot.event
@@ -703,49 +721,52 @@ async def on_message(message):
                 if match:
                     record_id = int(match.group(1))
                 else:
-                    print("Error extracting the issue/PR ID.")
+                    print("Error extracting the PR/issue ID.")
                     return
 
-                record_type = "Issue" if ("Issue opened:" in title or "Issue reopened:" in title) else "Pull Request"
+                record_type = "Issue" if ("Issue" in title) else "Pull Request"
                 record_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
                 record = {
                     'id': record_id,
                     'type': record_type,
                     'time': record_time,
+                    'valid_area_labeled_by_author_time': '',
+                    'valid_importance_labeled_by_reviewers_time': '',
                     'author': embed_author_name,
+                    'reviewers': [],
                     'url': embed.url,
-                    'api_url': DGB.url_to_api_url(embed.url)
+                    'labels': [],
                 }
 
                 try:
-                    with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'r') as file:
+                    with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
                         records = json.load(file)
                 except FileNotFoundError:
                     records = []
 
                 records.append(record)
 
-                with open(TEMPORARY_PR_ISSUE_RECORDS_FILE, 'w') as file:
+                with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
                     json.dump(records, file, indent=4)
 
                 record_id = int(match.group(1))
-                api_url = DGB.url_to_api_url(embed.url)
-                print(api_url)
-                await update_issue_pr(api_url, labels=['❔ pending'])
+
+                
+
+                await DGB.update_pr_issue(embed.url, labels=['❔ pending'], reviewers=[])
                 
             if "Issue closed:" in title or "Pull request closed:" in title:
                 match = re.search(r'#(\d+)', title)
                 if match:
                     record_id = int(match.group(1))
-                    record_type = "Issue" if "Issue" in title else "Pull Request"
-                    api_url = DGB.url_to_api_url(embed.url)
-                    if api_url:
-                        await fetch_and_process_github_data(api_url, record_id, record_type, embed_author_name)
+                    record_type = "Issue" if ("Issue" in title) else "Pull Request"
+                    if embed.url:
+                        await fetch_and_process_github_data(embed.url, record_type, embed_author_name)
                     else:
                         print("Error extracting URL details.")
                 else:
-                    print("Error extracting the issue/PR ID.")
+                    print("Error extracting the PR/issue ID.")
 
 
 async def calculate_and_display_total_contributions(channel, interaction=None, toggle=False):
@@ -778,7 +799,6 @@ async def calculate_and_display_total_contributions(channel, interaction=None, t
                 start_time_str = min(report['start_time'] for report in reports)
                 end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-                # Save the total data for future toggling
                 total_data = {
                     'start_time': start_time_str,
                     'end_time': end_time_str,
