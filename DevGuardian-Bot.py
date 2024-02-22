@@ -190,35 +190,68 @@ async def fetch_and_process_github_data(url, record_type, author_name):
         }) as response:
             if response.status == 200:
                 data = await response.json()
-                labels = [label['name'] for label in data.get("labels", [])]
-                state = data.get("state", "")
-                merged = data.get("merged", False)
+                labels = [label["name"] for label in data.get("labels", [])]
+                state = data["state"]
 
                 parts = url.split('/')
                 pr_or_issue_id = parts[6]
 
-                # ???????????? consider the pr case with using `check_latest_importance_labeling_action`
-                if state == "closed" and (not record_type == "Pull Request" or merged):
-                    if DGB.labels_verification(labels):
-                        await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                        await remove_record_from_current_open_pr_issue_file(pr_or_issue_id, record_type)
-                        print("blabla")
-                        # ????????????????????
-                    elif len(labels) == 0:
-                        await remove_record_from_current_open_pr_issue_file(pr_or_issue_id, record_type)
-                        print("blabla")
-                        # ????????????????????
+                if state == "closed":
+                    if (record_type == "Pull Request") and (data["pull_request"]["merged_at"] is not None):
+                        if DGB.meaningful_labels_verification(labels):
+                            if (await DGB.check_pr_latest_importance_labeling_action(url)):
+                                await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                                remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                                print("blabla")
+                                # xx ????????????????????
+                            else:
+                                await DGB.update_pr_issue(url, state="open", comment="This PR/issue should be reinspected due to invalid `Importance` labeler.\n\nOnly **Core Members** are allowed to label the `Importance`.")
+                                print("This PR/issue should be reinspected due to invalid `Importance` labeler. Only **Core Members** are allowed to label the `Importance`.")
+                                await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
+                                remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                                print("Undone invalid `Importance` labeling actions.")
+                                # ????????????????????
+                        elif len(labels) == 0:
+                            remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                            print("Meaningless PR without any labels.")
+                            # ????????????????????
+                        else:
+                            remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                            await DGB.update_pr_issue(url, state="open", comment="This PR/issue has been reopened due to invalid labeling.\n\nOnly `0` label (for meaningless PR/issue) and `2` labels (`1` `Importance` and `1` `Area` for meaningful PR/issue) are allowed.")
+                            print("Labels do not meet the conditions.")
+                    elif (record_type == "Issue"):
+                        if DGB.meaningful_labels_verification(labels):
+                            if (await DGB.check_issue_latest_importance_labeling_action(url)):
+                                await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                                remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                                print("blabla")
+                                # xx ????????????????????
+                            else:
+                                await DGB.update_pr_issue(url, state="open", comment="This PR/issue has been reopened due to invalid `Importance` labeler.\n\nOnly **Core Members** are allowed to label the `Importance`.")
+                                print("This PR/issue has been reopened due to invalid `Importance` labeler. Only **Core Members** are allowed to label the `Importance`.")
+                                await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
+                                print("Undone invalid `Importance` labeling actions.")
+                                # ????????????????????
+                        elif len(labels) == 0:
+                            remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                            print("Meaningless issue without any labels.")
+                            # ????????????????????
+                        else:
+                            remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                            await DGB.update_pr_issue(url, state="open", comment="This PR/issue has been reopened due to invalid labeling.\n\nOnly `0` label (for meaningless PR/issue) and `2` labels (`1` `Importance` and `1` `Area` for meaningful PR/issue) are allowed.")
+                            print("Labels do not meet the conditions.")
                     else:
-                        await DGB.update_pr_issue(url, state="open", comment="This PR/issue has been reopened due to incorrect labeling.")
-                        print("Labels do not meet the conditions.")
+                        remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                        print(f"Closed {record_type} not merged due to meaningless state.")
             else:
                 print(f"Failed to fetch data for {api_url}. Status code: {response.status}")
 
-async def remove_record_from_current_open_pr_issue_file(record_id, record_type):
+def remove_record_from_current_open_pr_issue_file(record_id):
     try:
         with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r+') as file:
             records = json.load(file)
-            records = [record for record in records if not (record['id'] == record_id and record['type'] == record_type)]
+            record_id = int(record_id)
+            records = [record for record in records if record['id'] != record_id]
             file.seek(0)
             file.truncate()
             json.dump(records, file, indent=4)
@@ -283,8 +316,8 @@ def extract_section(document, section_number):
 
 async def update_contribution_importance(interaction, author_id, issuer, labels, issued_time, number=1):
     
-    if len(labels) != 2:
-        raise ValueError("Labels list must be of length 2.")
+    if len(labels) != 2 and len(labels) != 3:
+        raise ValueError("Labels list must be of length 2 or 3.")
     
     importance_label = next((label for label in labels if label in IMPORTANCES_LIST), None)
     area_label = next((label for label in labels if label in AREAS_LIST), None)
@@ -337,7 +370,7 @@ async def update_contribution_importance(interaction, author_id, issuer, labels,
 
     print("Contribution updated!")
 
-async def check_core_member_qualification(author_name):
+def check_core_member_qualification(author_name):
     try:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
             data = json.load(file)
@@ -531,7 +564,7 @@ def save_history(start_time_str, current_time_str):
         with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'w') as file:
             json.dump([history_data], file, indent=4)
 
-async def reset_counts():
+def reset_counts():
     global activity_counts
     for activity in activity_counts:
         for author in AUTHORS_LIST:
@@ -632,10 +665,8 @@ async def periodic_open_pr_issue_check():
                         if response.status == 200:
                             data = await response.json()
                             labels = [label['name'] for label in data.get("labels", [])]
-
                             if len(labels) == 0:
                                 print("Meaningless PR/issue without any labels.")
-
                             elif labels == ['❔ pending']:
                                 if (not record['valid_area_labeled_by_author_time']):
                                     # ????????????????????? send the public notification
@@ -643,11 +674,16 @@ async def periodic_open_pr_issue_check():
                                     record['valid_area_labeled_by_author_time'] = 'Notified'
                                 else:
                                     print("Area label notification already sent.")
-
                             elif DGB.area_label_verification(labels):
-                                print("Valid area label found. Awaiting importance label.")
-                                record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                if record.get('valid_importance_labeled_by_reviewers_time') and DGB.check_review_deadline_exceeded(record):
+                                print("Valid area label found. Awaiting `Importance` label.")
+                                if (not record['valid_area_labeled_by_author_time'] or record['valid_area_labeled_by_author_time'] == 'Notified'):
+                                    record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                if (not record['reviewers']):
+                                    current_reviewers = [AUTHORS_LIST[0]]
+                                    current_reviewers_str = ', @'.join(current_reviewers)
+                                    record['reviewers'] = current_reviewers
+                                    await DGB.update_pr_issue(url, reviewers=current_reviewers, comment=f"Reviewer @{current_reviewers_str} is assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.")
+                                elif DGB.check_review_deadline_exceeded(record):
                                     if len(labels) == 2:
                                         print("Adding the label `⏰ review deadline exceeded`.")
                                         new_labels = labels + ['⏰ review deadline exceeded']
@@ -661,34 +697,29 @@ async def periodic_open_pr_issue_check():
                                         record['reviewers'] = new_reviewers
                                         record['previous_reviewers'] = previous_reviewers
                                         record['review_ddl_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
                                     else:
                                         print("Label `⏰ review deadline exceeded` has already been added.")
-
-                                elif (not record['reviewers']):
-
-                                    current_reviewers = [AUTHORS_LIST[0]]
-                                    current_reviewers_str = ', @'.join(current_reviewers)
-                                    record['reviewers'] = current_reviewers
-                                    await DGB.update_pr_issue(url, reviewers=current_reviewers, comment=f"Reviewer @{current_reviewers_str} is assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.")
-
-                            elif DGB.labels_verification(labels):
-                                if (not record['valid_importance_labeled_by_reviewers_time']):
-                                    current_reviewers = [AUTHORS_LIST[0]]
+                            elif DGB.meaningful_labels_verification(labels):
+                                if (not record['reviewers']):
+                                    record['labels'] = ['❔ pending']
+                                    record['valid_importance_labeled_by_reviewers_time'] = ''
+                                    record['valid_area_labeled_by_author_time'] = ''
+                                    record['reviewers'] = []
+                                    await DGB.update_pr_issue(url, labels=['❔ pending'], comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
+                                elif (not record['valid_importance_labeled_by_reviewers_time']):
+                                    current_reviewers = record['reviewers']
                                     current_reviewers_str = ', @'.join(current_reviewers)
                                     record['reviewers'] = current_reviewers
                                     record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                    await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has add the `Importance` label to this PR/issue.")
-
+                                    await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
                                 else:
                                     print("No action needed.")
-
                             else:
                                 record['labels'] = ['❔ pending']
                                 record['valid_importance_labeled_by_reviewers_time'] = ''
                                 record['valid_area_labeled_by_author_time'] = ''
                                 record['reviewers'] = []
-                                await DGB.update_pr_issue(url, labels=['❔ pending'], comment="This PR/issue has been relabeled as `❔ pending` due to incorrect labeling.")
+                                await DGB.update_pr_issue(url, labels=['❔ pending'], comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
 
             with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
                 json.dump(records, file, indent=4)
@@ -711,7 +742,7 @@ async def on_message(message):
 
         for embed in message.embeds:
 
-            DGB.print_embed_message(embed)
+            # DGB.print_embed_message(embed)
 
             title = embed.title if embed.title else ""
             embed_author_name = embed.author.name if embed.author else "No author"
@@ -745,7 +776,13 @@ async def on_message(message):
                 except FileNotFoundError:
                     records = []
 
-                records.append(record)
+                existing_record = next((item for item in records if item['id'] == record_id), None)
+
+                if existing_record == None:
+                    records.append(record)
+                else:
+                    print("Record already exists.")
+                    pass
 
                 with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
                     json.dump(records, file, indent=4)
@@ -753,8 +790,9 @@ async def on_message(message):
                 record_id = int(match.group(1))
 
                 
-
-                await DGB.update_pr_issue(embed.url, labels=['❔ pending'], reviewers=[])
+                if "Issue opened:" in title or "Pull request opened:" in title:
+                    await DGB.update_pr_issue(embed.url, labels=['❔ pending'], reviewers=[]) 
+                    # ?????????????????
                 
             if "Issue closed:" in title or "Pull request closed:" in title:
                 match = re.search(r'#(\d+)', title)

@@ -25,6 +25,9 @@ AUTHORS_LIST = ["",]
 # List of corresponding Discord userID
 DISCORD_USER_IDS_LIST = ["",]
 
+# List of predefined core members
+CORE_MEMBERS_LIST = ["",] 
+
 # Areas for contributions
 AREAS_LIST = ["Art", "Community Management", "Marketing and Public Relations", "Narrative and Writing", "Programming", "Project Management", "Quality Assurance", "Sound and Music", "Technical Art", "UI/UX Design"]
 
@@ -36,6 +39,9 @@ CURRENT_STYLE = False
 
 # Time interval for periodic reports (weeks=? or days=? or hours=? or minutes=? or seconds=?)
 REPORT_INTERVAL = timedelta(days=1)
+
+# Deadline for reviewing PRs
+REVIEW_DEADLINE = timedelta(days=4)
 
 # Minimum number of contributions to be considered for periodic reports
 MIN_PERIODIC_CONTRIBUTIONS = 1
