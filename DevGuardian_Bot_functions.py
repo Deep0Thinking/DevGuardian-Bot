@@ -189,15 +189,29 @@ async def undo_invalid_issue_importance_labeling_action(session, url, labels):
             print("Undoing the invalid `Importance` labeling action.")
             if pr_importance_action[i] == "labeled":
                 labels = [label for label in labels if label != pr_importance_labels[i]]
-                print("if",labels)
                 await update_pr_issue(url, labels=labels)
             else:
                 labels = labels + [pr_importance_labels[i]]
-                print("else:",labels)
                 await update_pr_issue(url, labels=labels)
         else:
             print(f"{pr_importance_labelers[i]} is the reviewer of the PR. No action needed.")
             break
+
+async def fetch_current_area_label(session, url):
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3.raw"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url_to_api_url(url), headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                first_label_in_area = next((label['name'] for label in data.get("labels", []) if label['name'] in AREAS_LIST), None)
+                if first_label_in_area:  
+                    area_label = [first_label_in_area]
+                else:
+                    area_label = []
+                return area_label
     
 async def fetch_latest_importance_labeler(session, url):
     headers = {
@@ -239,7 +253,6 @@ async def check_issue_latest_importance_labeling_action(url):
         if not latest_importance_labeler:
             print("No `Importance` label found.")
             return False
-        
         return (latest_importance_labeler in CORE_MEMBERS_LIST)
 
 async def update_pr_issue(url, labels=None, state=None, comment=None, reviewers=None):
