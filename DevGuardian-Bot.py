@@ -35,6 +35,9 @@ AREAS_LIST = config.AREAS_LIST
 CORE_MEMBERS_LIST = config.CORE_MEMBERS_LIST
 
 
+
+file_access_lock = asyncio.Lock()
+
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 
 @bot.tree.command(name="test", description="Test the command")
@@ -73,8 +76,21 @@ async def panel(interaction: discord.Interaction):
     view.add_item(add_importance_instruction_button)
     await interaction.response.send_message(view=view)
 
-@bot.tree.command(name="add_contribs_imp", description="Tag a member's contribution with an importance level")
-@app_commands.describe(member="The member to tag", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)")
+@bot.tree.command(name="add_contribs", description="Tag a member's contribution with a pair area and importance level")
+@app_commands.describe(member="The member to tag", area="The area of the contribution", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)")
+@app_commands.choices(area=[
+    app_commands.Choice(name='Art', value='Art'),
+    app_commands.Choice(name='Community Management', value='Community Management'),
+    app_commands.Choice(name='Game Design', value='Game Design'),
+    app_commands.Choice(name='Marketing and Public Relations', value='Marketing and Public Relations'),
+    app_commands.Choice(name='Narrative and Writing', value='Narrative and Writing'),
+    app_commands.Choice(name='Programming', value='Programming'),
+    app_commands.Choice(name='Project Management', value='Project Management'),
+    app_commands.Choice(name='Quality Assurance', value='Quality Assurance'),
+    app_commands.Choice(name='Sound and Music', value='Sound and Music'),
+    app_commands.Choice(name='Technical Art', value='Technical Art'),
+    app_commands.Choice(name='UI/UX Design', value='UI/UX Design')
+])
 @app_commands.choices(importance=[
     app_commands.Choice(name='5️⃣ critical', value='5️⃣ critical'),
     app_commands.Choice(name='4️⃣ significant', value='4️⃣ significant'),
@@ -82,7 +98,7 @@ async def panel(interaction: discord.Interaction):
     app_commands.Choice(name='2️⃣ moderate', value='2️⃣ moderate'),
     app_commands.Choice(name='1️⃣ minor', value='1️⃣ minor')
 ])
-async def add_contribs_imp(interaction: discord.Interaction, member: discord.Member, importance: app_commands.Choice[str], number: int = 1):
+async def add_contribs(interaction: discord.Interaction, member: discord.Member, area: app_commands.Choice[str], importance: app_commands.Choice[str], number: int = 1):
     if interaction.guild is None:
         await interaction.response.send_message("This command cannot be used in private messages.", ephemeral=True)
         return
@@ -97,46 +113,47 @@ async def add_contribs_imp(interaction: discord.Interaction, member: discord.Mem
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     issuer = interaction.user.name
 
-    await update_contribution_importance(interaction, member.id, issuer, importance.value, now, number)
+    await update_contribution_importance(interaction, member.id, issuer, [area.value, importance.value], now, number)
 
     author_name = id_to_name(member.id)
 
     if author_name:
         number_with_sign = f"+{number}" if number > 0 else str(number)
         await interaction.response.defer(ephemeral=False)
-        await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contributions.")
+        await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contribution in `{area.name}`.")
         if importance.value == '4️⃣ significant' or importance.value == '5️⃣ critical':
-            with open(FORMAL_WARNINGS_FILE, 'r') as file:
-                warnings_data = json.load(file)
-                total_warnings = 0
-                for data in warnings_data:
-                    if data['author'] != author_name:
-                        continue
-                    total_warnings += data['warning_count']
-                
-                if total_warnings > 0:
-
-                    new_warning_record = {
-                        "author": author_name,
-                        "warning_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        "warning_count": -1 
-                    }
-                    warnings_data.append(new_warning_record)
+            async with file_access_lock:
+                with open(FORMAL_WARNINGS_FILE, 'r') as file:
+                    warnings_data = json.load(file)
+                    total_warnings = 0
+                    for data in warnings_data:
+                        if data['author'] != author_name:
+                            continue
+                        total_warnings += data['warning_count']
                     
-                    with open(FORMAL_WARNINGS_FILE, 'w') as file:
-                        json.dump(warnings_data, file, indent=4)
+                    if total_warnings > 0:
 
-                    await interaction.followup.send(f"📝 **Formal Warning Adjustment** 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
-                
-            qualifies_for_core_member, _, _ = await check_core_member_qualification(author_name)
+                        new_warning_record = {
+                            "author": author_name,
+                            "warning_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            "warning_count": -1 
+                        }
+                        warnings_data.append(new_warning_record)
+                        
+                        with open(FORMAL_WARNINGS_FILE, 'w') as file:
+                            json.dump(warnings_data, file, indent=4)
 
-            if qualifies_for_core_member:
-                core_member_role = discord.utils.get(interaction.guild.roles, name=CORE_MEMBER_ROLE_NAME)
-                if core_member_role and core_member_role not in member.roles:
-                    await member.add_roles(core_member_role)
-                    await interaction.followup.send(f"🌟 **Core Member Designation** 🌟\n\n{member.mention} has made `5` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
-                else:
-                    print(f"Role '{CORE_MEMBER_ROLE_NAME}' not found or member already has the role.")
+                        await interaction.followup.send(f"📝 **Formal Warning Adjustment** 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
+                    
+                qualifies_for_core_member, _, _ = check_core_member_qualification(author_name)
+
+                if qualifies_for_core_member:
+                    core_member_role = discord.utils.get(interaction.guild.roles, name=CORE_MEMBER_ROLE_NAME)
+                    if core_member_role and core_member_role not in member.roles:
+                        await member.add_roles(core_member_role)
+                        await interaction.followup.send(f"🌟 **Core Member Designation** 🌟\n\n{member.mention} has made `5` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
+                    else:
+                        print(f"Role '{CORE_MEMBER_ROLE_NAME}' not found or member already has the role.")
 
 activity_counts = {
     'Pull request opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST}),
@@ -324,15 +341,15 @@ def extract_section(document, section_number):
         return '\n'.join(section_content)
 
 async def update_contribution_importance(interaction, author_id, issuer, labels, issued_time, number=1):
-    
-    if len(labels) != 2 and len(labels) != 3:
+
+    if len(labels) not in (2, 3):
         raise ValueError("Labels list must be of length 2 or 3.")
     
     importance_label = next((label for label in labels if label in IMPORTANCES_LIST), None)
     area_label = next((label for label in labels if label in AREAS_LIST), None)
 
     if not importance_label or not area_label:
-        raise ValueError("One label must be from the importance levels and the other from the contribution areas.")
+        raise ValueError("One label must be from the contribution areas and the other from the importance levels.")
     
     author_name = id_to_name(author_id)
     if author_name is None:
@@ -340,42 +357,18 @@ async def update_contribution_importance(interaction, author_id, issuer, labels,
         await interaction.followup.send(f"Could not find an author name for the given ID: {author_id}")
         return
     
-    try:
-        with open(CONTRIBUTION_IMPORTANCE_FILE, 'r+') as file:
-            try:
-                data = json.load(file)
-            except json.JSONDecodeError:
-                data = []
-            
-            record = next((item for item in data if item['author'] == author_name), None)
-            if record:
-                record['area'] = area_label
-                record['importance'] = importance_label
-                record['count'] = str(int(record.get('count', '0')) + number)
-            else:
-                data.append({
-                    'author': author_name,
-                    'issued_time': issued_time,
-                    'issuer': issuer,
-                    'area': area_label,
-                    'importance': importance_label,
-                    'count': str(number)
-                })
-            
-            file.seek(0)
-            file.truncate()
-            json.dump(data, file, indent=4)
-            
-    except FileNotFoundError:
-        with open(CONTRIBUTION_IMPORTANCE_FILE, 'w') as file:
-            json.dump([{
-                'author': author_name,
-                'issued_time': issued_time,
-                'issuer': issuer,
-                'area': area_label,
-                'importance': importance_label,
-                'count': str(number)
-            }], file, indent=4)
+    new_record = {
+        'author': author_name,
+        'issued_time': issued_time,
+        'issuer': issuer,
+        'area': area_label,
+        'importance': importance_label,
+        'count': str(number)
+    }
+    
+    async with file_access_lock:
+        with open(CONTRIBUTION_IMPORTANCE_FILE, 'a') as file:
+            file.write(json.dumps(new_record) + '\n')
 
     print("Contribution updated!")
 
@@ -398,22 +391,22 @@ def check_core_member_qualification(author_name):
     return qualifies_for_core_member, total_significant, total_critical
 
 async def calculate_and_display_contribution_importance(channel, interaction=None):
-    importance_counts = defaultdict(lambda: defaultdict(int))
-    for author in AUTHORS_LIST:
-        for importance in IMPORTANCES_LIST:
-            importance_counts[author][importance] = 0
+    area_imp_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
     try:
         with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
-            contributions_data = json.load(file)
-            for record in contributions_data:
+            for line in file:
+                try:
+                    record = json.loads(line.strip())
+                    author = record['author']
+                    area = record['area']
+                    importance = record['importance']
+                    count = int(record['count'])
 
-                author_lower = {a.lower(): a for a in AUTHORS_LIST}
-                record_author = author_lower.get(record['author'].lower())
-                if record_author:
-                    for importance, count in record.items():
-                        if importance in importance_counts[record_author]:
-                            importance_counts[record_author][importance] += count
+                    if author in AUTHORS_LIST:
+                        area_imp_counts[author][area][importance] += count
+                except json.JSONDecodeError:
+                    continue 
     except FileNotFoundError:
         print("Contribution importance data file not found.")
     
@@ -427,7 +420,7 @@ async def calculate_and_display_contribution_importance(channel, interaction=Non
     start_time_str = min(report['start_time'] for report in reports)
     end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    embed_description = generate_embed_description_for_importance(CURRENT_STYLE, importance_counts)
+    embed_description = generate_embed_description_for_importance(CURRENT_STYLE, area_imp_counts)
     embed = discord.Embed(title=f"Contribution Importance Report\n\n`{start_time_str}` to `{end_time_str}`", description=embed_description, color=0x4895EF)
     toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_importance_style")
     
@@ -439,29 +432,61 @@ async def calculate_and_display_contribution_importance(channel, interaction=Non
     else:
         await channel.send(embed=embed, view=view)
 
-def generate_embed_description_for_importance(style, importance_counts):
+def generate_embed_description_for_importance(style, area_imp_counts):
     embed_description = ""
-    authors_contributions_importance_index = []
-
-    if style:  # Alternate Style
-        embed_description += "\n"
-        for index, author in enumerate(AUTHORS_LIST):
-            counts = importance_counts[author]
-            authors_contributions_importance_index.append(index)
-            embed_description += f"<@{DISCORD_USER_IDS_LIST[index]}>\n"
-            embed_description += "".join(f"> {importance.capitalize()}: `{counts[importance]}`\n" for importance in IMPORTANCES_LIST)
+    
+    if style:
+        for author_id, discord_id in zip(AUTHORS_LIST, DISCORD_USER_IDS_LIST):
+            embed_description += f"\n\n<@{discord_id}>\n"
             
-    else:  # Table-like style
+            for area in AREAS_LIST:
+                area_abbreviation = ''.join(filter(str.isupper, area))
+                area_description = f"\n{area_abbreviation}:\n"
+                has_contributions = False
+                
+                for importance in IMPORTANCES_LIST:
+                    first_word_of_importance = importance.split()[0] if importance else ""
+                    count = area_imp_counts.get(author_id, {}).get(area, {}).get(importance, 0)
+                    if count > 0:
+                        area_description += f"> {first_word_of_importance}: `{count}`\n"
+                        has_contributions = True
+                
+                if has_contributions:
+                    embed_description += area_description
+
+    else:
         embed_description += "```"
-        headers = "Author             | Cri | Sig | Not | Mod | Min\n"
-        separator = "-" * 51 + "\n"
-        embed_description += headers + separator
-        for author in AUTHORS_LIST: 
-            counts = importance_counts[author]
-            row = f"{author: <18} | "
-            row += " | ".join([f"{counts[importance]: <3}" for importance in IMPORTANCES_LIST])
-            embed_description += row + "\n"
+        embed_description += "\n"
+        for author_index, (author_id, discord_id) in enumerate(zip(AUTHORS_LIST, DISCORD_USER_IDS_LIST)):
+            author_description = f"{author_id}\n\n"
+            has_area_contributions = False
+            
+            for area in AREAS_LIST:
+                area_abbreviation = ''.join(filter(str.isupper, area))
+                area_description = f"{area_abbreviation}:\n"
+                area_has_contributions = False
+                
+                for importance in IMPORTANCES_LIST:
+                    first_word_of_importance = importance.split()[0] if importance else ""
+                    count = area_imp_counts.get(author_id, {}).get(area, {}).get(importance, 0)
+                    if count > 0:
+                        area_description += f" {first_word_of_importance}: {count}\n"
+                        area_has_contributions = True
+                        has_area_contributions = True
+
+                if area_has_contributions:
+                    author_description += f"{area_description}\n"
+            
+            if has_area_contributions:
+                embed_description += f"{author_description}"
+            else:
+                embed_description += f"{author_id}\n"
+            
+            if author_index < len(AUTHORS_LIST) - 1:
+                embed_description += "\n"
+                
         embed_description += "```"
+
     return embed_description
 
 def save_formal_warnings(authors_list, warning_time=None):
@@ -486,7 +511,7 @@ def save_formal_warnings(authors_list, warning_time=None):
                 if not existing_warning:
                     data.append(warning_data)
                     file.seek(0)
-                    file.truncate(0)  # Clear the file before rewriting
+                    file.truncate(0)
                     json.dump(data, file, indent=4)
         except FileNotFoundError:
             with open(FORMAL_WARNINGS_FILE, 'w') as file:
@@ -499,7 +524,7 @@ async def total_formal_warnings_report(channel, interaction=None):
         with open(FORMAL_WARNINGS_FILE, 'r') as file:
             warnings_data = json.load(file)
     except FileNotFoundError:
-        warnings_data = []  
+        warnings_data = []
 
     warnings_count = {author: 0 for author in AUTHORS_LIST}
     members_to_expel = []
@@ -656,9 +681,13 @@ async def send_report(style):
 
 async def periodic_open_pr_issue_check():
     while True:
-        try:
-            with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
-                records = json.load(file)
+        async with file_access_lock:
+            try:
+                with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
+                    records = json.load(file)
+            except FileNotFoundError:
+                print("Current open PR/Issue records file not found.")
+                records = []
 
             for record in records:
                 url = record.get('url')
@@ -688,7 +717,7 @@ async def periodic_open_pr_issue_check():
                                     print("Area label notification already sent.")
                             elif DGB.area_label_verification(labels):
                                 record['valid_importance_labeled_by_reviewers_time'] = ''
-                                print("Valid area label found. Awaiting `Importance` label. (Reset `valid_importance_labeled_by_reviewers_time`.)")
+                                # print("Valid area label found. Awaiting `Importance` label. (Reset `valid_importance_labeled_by_reviewers_time`.)")
                                 if (not record['valid_area_labeled_by_author_time'] or record['valid_area_labeled_by_author_time'] == 'Notified'):
                                     record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                     record['labels'] = labels
@@ -717,6 +746,10 @@ async def periodic_open_pr_issue_check():
                                         record['labels'] = labels
                                         # print("Label `⏰ review deadline exceeded` has already been added.")
                             elif DGB.meaningful_labels_verification(labels):
+                                if DGB.check_review_deadline_exceeded(record):
+                                    if len(labels) == 2:
+                                        new_labels = labels + ['⏰ review deadline exceeded']
+                                        await DGB.update_pr_issue(url, labels=new_labels)
                                 if (not record['reviewers']):
                                     first_match = next((label for label in labels if label in AREAS_LIST), None)
                                     review_deadline_exceeded_label = next((label for label in labels if label in ['⏰ review deadline exceeded']), None)
@@ -750,11 +783,8 @@ async def periodic_open_pr_issue_check():
                                 record['reviewers'] = []
                                 await DGB.update_pr_issue(url, labels=area_label_with_pending_label, comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
 
-            with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
-                json.dump(records, file, indent=4)
-
-        except FileNotFoundError:
-            print("Current open PR/Issue records file not found.")
+                with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
+                    json.dump(records, file, indent=4)
 
         await asyncio.sleep(5)  # Wait for 30 minutes (1800 seconds) before next iteration
 
@@ -799,29 +829,31 @@ async def on_message(message):
                     'labels': [],
                 }
 
-                try:
-                    with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
-                        records = json.load(file)
-                except FileNotFoundError:
-                    records = []
+                async with file_access_lock:
 
-                existing_record = next((item for item in records if item['id'] == record_id), None)
+                    try:
+                        with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
+                            records = json.load(file)
+                    except FileNotFoundError:
+                        records = []
 
-                if existing_record == None:
-                    records.append(record)
-                else:
-                    print("Record already exists.")
-                    pass
+                    existing_record = next((item for item in records if item['id'] == record_id), None)
 
-                with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
-                    json.dump(records, file, indent=4)
+                    if existing_record == None:
+                        records.append(record)
+                    else:
+                        print("Record already exists.")
+                        pass
 
-                record_id = int(match.group(1))
+                    with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
+                        json.dump(records, file, indent=4)
 
-                async with aiohttp.ClientSession() as session:
-                    current_area_label = await DGB.fetch_current_area_label(session, embed.url)
-                current_area_label = current_area_label + ['❔ pending']
-                await DGB.update_pr_issue(embed.url, current_area_label, reviewers=[]) 
+                    record_id = int(match.group(1))
+
+                    async with aiohttp.ClientSession() as session:
+                        current_area_label = await DGB.fetch_current_area_label(session, embed.url)
+                    current_area_label = current_area_label + ['❔ pending']
+                    await DGB.update_pr_issue(embed.url, current_area_label, reviewers=[]) 
                 
             if "Issue closed:" in title or "Pull request closed:" in title:
                 match = re.search(r'#(\d+)', title)
@@ -877,27 +909,27 @@ async def calculate_and_display_total_contributions(channel, interaction=None, t
             await channel.send("Periodic contributions history file not found.")
             return
 
-    total_report_title = f"Total Contributions Report\n\n`{start_time_str}` to `{end_time_str}`"
-    total_embed_description = generate_embed_description(CURRENT_STYLE, total_activity_counts, include_warnings=False)
-    total_embed = discord.Embed(title=total_report_title, description=total_embed_description, color=0x4895EF)
-    toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_total_style")
-    view = View()
-    view.add_item(toggle_button)
-    
-    if interaction:
-        await interaction.edit_original_response(embed=total_embed, view=view)
-    else:
-        await channel.send(embed=total_embed, view=view)
+        total_report_title = f"Total Contributions Report\n\n`{start_time_str}` to `{end_time_str}`"
+        total_embed_description = generate_embed_description(CURRENT_STYLE, total_activity_counts, include_warnings=False)
+        total_embed = discord.Embed(title=total_report_title, description=total_embed_description, color=0x4895EF)
+        toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_total_style")
+        view = View()
+        view.add_item(toggle_button)
+        
+        if interaction:
+            await interaction.edit_original_response(embed=total_embed, view=view)
+        else:
+            await channel.send(embed=total_embed, view=view)
 
 @bot.event
 async def on_interaction(interaction):
     global CURRENT_STYLE
     if interaction.type == discord.InteractionType.component:
         if interaction.data.get('custom_id') == "add_importance_instruction":
-            instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribs_imp`. "
-            instruction_message += "You'll need to specify the member, the importance level of their contribution, and the number of contributions at that level.\n\n"
-            instruction_message += "Example 1: `/add_contribs_imp member:@User importance:5️⃣ critical number:2`.\n\n"
-            instruction_message += "Example 2: `/add_contribs_imp member:@User importance:3️⃣ notable number:-1`.\n\n"
+            instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribs`. "
+            instruction_message += "You'll need to specify the member, the area and the importance level of their contribution, and the number of contributions at that level.\n\n"
+            instruction_message += "Example 1: `/add_contribs member:@User importance:5️⃣ critical number:2`.\n\n"
+            instruction_message += "Example 2: `/add_contribs member:@User importance:3️⃣ notable number:-1`.\n\n"
             instruction_message += "**Important Restrictions**:\n"
             instruction_message += "- **Server Limitation**: This command is exclusive to the **CruxAbyss** server.\n"
             instruction_message += "- **Permission Requirement**: Only **admin** roles are authorized to use this command."

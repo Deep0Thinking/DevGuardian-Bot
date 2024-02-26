@@ -3,6 +3,9 @@ import config
 import aiohttp
 from datetime import datetime
 import json
+import asyncio
+
+file_access_lock = asyncio.Lock()
 
 IMPORTANCES_LIST = config.IMPORTANCES_LIST
 AREAS_LIST = config.AREAS_LIST
@@ -155,7 +158,7 @@ async def undo_invalid_pr_importance_labeling_action(session, url, labels):
     pr_importance_action.reverse()
 
     try:
-        with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r+') as file:
+        with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
             records = json.load(file)
     except FileNotFoundError:
         print("Current_open_pr_issue file not found.")
