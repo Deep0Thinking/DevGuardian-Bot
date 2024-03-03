@@ -21,11 +21,10 @@ DISCORD_USER_IDS_LIST = config.DISCORD_USER_IDS_LIST
 CURRENT_STYLE = config.CURRENT_STYLE
 REPORT_INTERVAL = config.REPORT_INTERVAL
 PERIODIC_CONTRIBUTIONS_HISTORY_FILE = config.PERIODIC_CONTRIBUTIONS_HISTORY_FILE
-TOTAL_CONTRIBUTIONS_FILE = config.TOTAL_CONTRIBUTIONS_FILE
 FORMAL_WARNINGS_FILE = config.FORMAL_WARNINGS_FILE
 MIN_PERIODIC_CONTRIBUTIONS = config.MIN_PERIODIC_CONTRIBUTIONS
 MAX_FORMAL_WARNINGS = config.MAX_FORMAL_WARNINGS
-CONTRIBUTION_IMPORTANCE_FILE = config.CONTRIBUTION_IMPORTANCE_FILE
+CONTRIBUTIONS_HISTORY_FILE = config.CONTRIBUTIONS_HISTORY_FILE
 CORE_MEMBER_ROLE_NAME = config.CORE_MEMBER_ROLE_NAME
 GITHUB_TOKEN = config.GITHUB_TOKEN
 DOC_URL = config.DOC_URL
@@ -64,20 +63,18 @@ async def license(interaction: discord.Interaction, section: str):
 
 @bot.tree.command(name="panel", description="Show the panel")
 async def panel(interaction: discord.Interaction):
-    calculate_button = Button(label="Total Contribs Report", style=discord.ButtonStyle.blurple, custom_id="display_total_contributions")
-    warnings_button = Button(label="Total FWs Report", style=discord.ButtonStyle.red, custom_id="display_total_formal_warnings")
-    importance_button = Button(label="Contribs Imp Report", style=discord.ButtonStyle.green, custom_id="display_contribution_importance")
-    add_importance_instruction_button = Button(label="Add Contribs Imp", style=discord.ButtonStyle.grey, custom_id="add_importance_instruction")
+    importance_button = Button(label="Contribs Report", style=discord.ButtonStyle.green, custom_id="display_contributions")
+    warnings_button = Button(label="FWs Report", style=discord.ButtonStyle.red, custom_id="display_total_formal_warnings")
+    add_importance_instruction_button = Button(label="Add Contribs", style=discord.ButtonStyle.grey, custom_id="add_importance_instruction")
     
     view = View()
-    view.add_item(calculate_button)
-    view.add_item(warnings_button)
     view.add_item(importance_button)
+    view.add_item(warnings_button)
     view.add_item(add_importance_instruction_button)
     await interaction.response.send_message(view=view)
 
 @bot.tree.command(name="add_contribs", description="Tag a member's contribution with a pair area and importance level")
-@app_commands.describe(member="The member to tag", area="The area of the contribution", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)")
+@app_commands.describe(member="The member to tag", area="The area of the contribution", importance="The importance level of the contribution", number="The number to adjust the importance by (default: +1)", reason="The reason for the adjustment (default: N/A)")
 @app_commands.choices(area=[
     app_commands.Choice(name='Art', value='Art'),
     app_commands.Choice(name='Community Management', value='Community Management'),
@@ -98,7 +95,7 @@ async def panel(interaction: discord.Interaction):
     app_commands.Choice(name='2️⃣ moderate', value='2️⃣ moderate'),
     app_commands.Choice(name='1️⃣ minor', value='1️⃣ minor')
 ])
-async def add_contribs(interaction: discord.Interaction, member: discord.Member, area: app_commands.Choice[str], importance: app_commands.Choice[str], number: int = 1):
+async def add_contribs(interaction: discord.Interaction, member: discord.Member, area: app_commands.Choice[str], importance: app_commands.Choice[str], number: int = 1, reason: str = "N/A"):
     if interaction.guild is None:
         await interaction.response.send_message("This command cannot be used in private messages.", ephemeral=True)
         return
@@ -112,15 +109,16 @@ async def add_contribs(interaction: discord.Interaction, member: discord.Member,
     
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     issuer = interaction.user.name
+    url = "N/A"
 
-    await update_contribution_importance(interaction, member.id, issuer, [area.value, importance.value], now, number)
+    await DGB.update_contribution(bot, member.id, issuer, [area.value, importance.value], now, number, reason=reason)
 
-    author_name = id_to_name(member.id)
+    author_name = DGB.id_to_name(member.id)
 
     if author_name:
         number_with_sign = f"+{number}" if number > 0 else str(number)
         await interaction.response.defer(ephemeral=False)
-        await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contribution in `{area.name}`.")
+        await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contribution in `{area.name}`, URL: `{url}`, Reason: `{reason}`")
         if importance.value == '4️⃣ significant' or importance.value == '5️⃣ critical':
             async with file_access_lock:
                 with open(FORMAL_WARNINGS_FILE, 'r') as file:
@@ -143,7 +141,7 @@ async def add_contribs(interaction: discord.Interaction, member: discord.Member,
                         with open(FORMAL_WARNINGS_FILE, 'w') as file:
                             json.dump(warnings_data, file, indent=4)
 
-                        await interaction.followup.send(f"📝 **Formal Warning Adjustment** 📝\n\n<@{member.id}>, in accordance with section 4.2 of the CruxAbyss Development Team License Agreement, `1` **formal warning** has been officially **removed** from your record due to your `{importance.value}` contribution. Your commitment to the project and adherence to our collective standards of conduct and contribution is greatly appreciated.")
+                        await interaction.followup.send(f"📝 **Formal Warning Adjustment** 📝\n\n<@{member.id}>, ????")
                     
                 qualifies_for_core_member, _, _ = check_core_member_qualification(author_name)
 
@@ -170,7 +168,7 @@ async def on_ready():
     synced = await bot.tree.sync()
     print(f'Synced {len(synced)} command (s)') # Restart your discord to see the changes
     bot.loop.create_task(background_task())
-    bot.loop.create_task(periodic_open_pr_issue_check())  # Start the periodic label check task
+    bot.loop.create_task(periodic_open_pr_issue_check())
 
 async def background_task():
     await bot.wait_until_ready()
@@ -185,12 +183,7 @@ def is_admin(interaction: discord.Interaction) -> bool:
         return member.guild_permissions.administrator
     else:
         return False
- 
-def id_to_name(author_id):
-    for idx, discord_id in enumerate(DISCORD_USER_IDS_LIST):
-        if str(discord_id) == str(author_id):
-            return AUTHORS_LIST[idx]
-    return None
+
 
 def name_to_id(author):
     for idx, name in enumerate(AUTHORS_LIST):
@@ -218,21 +211,18 @@ async def fetch_and_process_github_data(url, record_type, author_name):
                         if data["pull_request"]["merged_at"] is not None:
                             if DGB.meaningful_labels_verification(labels):
                                 if (await DGB.check_pr_latest_importance_labeling_action(url)):
-                                    await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                                    await DGB.update_contribution(bot, name_to_id(author_name), ["DevGuardian Bot"], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), url=url, reason="Contributions (PR) archived.")
                                     remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                                     print("blabla")
-                                    # xx ????????????????????
                                 else:
                                     await DGB.update_pr_issue(url, comment="This PR/issue should be reinspected due to invalid `Importance` labeler.\n\nOnly **Reviewers** are allowed to label the `Importance`.") # state="open"
                                     print("This PR/issue should be reinspected due to invalid `Importance` labeler. Only **Reviewers** are allowed to label the `Importance`.")
                                     await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
                                     remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                                     print("Undone invalid `Importance` labeling actions.")
-                                    # ????????????????????
                             elif len(labels) == 0:
                                 remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                                 print("Meaningless PR without any labels.")
-                                # ????????????????????
                             else:
                                 remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                                 await DGB.update_pr_issue(url, state="open", comment="This PR has been reopened due to invalid labeling.\n\nOnly `0` label (for meaningless PR/issue) and `2` labels (`1` `Importance` and `1` `Area` for meaningful PR/issue) are allowed.")
@@ -240,7 +230,6 @@ async def fetch_and_process_github_data(url, record_type, author_name):
                         elif len(labels) == 0:
                                 remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                                 print("Meaningless PR without any labels.")
-                                # ????????????????????
                         else:
                             remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                             await DGB.update_pr_issue(url, state="open", comment="This PR has been reopened due to invalid labeling.\n\nOnly `0` label (for meaningless PR/issue) and `2` labels (`1` `Importance` and `1` `Area` for meaningful PR/issue) are allowed.")
@@ -248,20 +237,16 @@ async def fetch_and_process_github_data(url, record_type, author_name):
                     elif (record_type == "Issue"):
                         if DGB.meaningful_labels_verification(labels):
                             if (await DGB.check_issue_latest_importance_labeling_action(url)):
-                                await update_contribution_importance(None, name_to_id(author_name), "CruxAbyss Bot", labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                                 remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
-                                print("blabla")
-                                # xx ????????????????????
+                                print("Issue archived.")
                             else:
                                 await DGB.update_pr_issue(url, state="open", comment="This issue has been reopened due to invalid `Importance` labeler.\n\nOnly **Core Members** are allowed to label the `Importance`.")
                                 print("This issue has been reopened due to invalid `Importance` labeler. Only **Core Members** are allowed to label the `Importance`.")
                                 await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
                                 print("Undone invalid `Importance` labeling actions.")
-                                # ????????????????????
                         elif len(labels) == 0:
                             remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                             print("Meaningless issue without any labels.")
-                            # ????????????????????
                         else:
                             remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
                             await DGB.update_pr_issue(url, state="open", comment="This issue has been reopened due to invalid labeling.\n\nOnly `0` label (for meaningless PR/issue) and `2` labels (`1` `Importance` and `1` `Area` for meaningful PR/issue) are allowed.")
@@ -340,41 +325,9 @@ def extract_section(document, section_number):
         print(f"Content found for section {section_number}.")
         return '\n'.join(section_content)
 
-async def update_contribution_importance(interaction, author_id, issuer, labels, issued_time, number=1):
-
-    if len(labels) not in (2, 3):
-        raise ValueError("Labels list must be of length 2 or 3.")
-    
-    importance_label = next((label for label in labels if label in IMPORTANCES_LIST), None)
-    area_label = next((label for label in labels if label in AREAS_LIST), None)
-
-    if not importance_label or not area_label:
-        raise ValueError("One label must be from the contribution areas and the other from the importance levels.")
-    
-    author_name = id_to_name(author_id)
-    if author_name is None:
-        await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(f"Could not find an author name for the given ID: {author_id}")
-        return
-    
-    new_record = {
-        'author': author_name,
-        'issued_time': issued_time,
-        'issuer': issuer,
-        'area': area_label,
-        'importance': importance_label,
-        'count': str(number)
-    }
-    
-    async with file_access_lock:
-        with open(CONTRIBUTION_IMPORTANCE_FILE, 'a') as file:
-            file.write(json.dumps(new_record) + '\n')
-
-    print("Contribution updated!")
-
 def check_core_member_qualification(author_name):
     try:
-        with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
+        with open(CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
             data = json.load(file)
     except FileNotFoundError:
         print("Contribution importance file not found.")
@@ -390,12 +343,26 @@ def check_core_member_qualification(author_name):
     qualifies_for_core_member = total_significant >= 5 or total_critical >= 1
     return qualifies_for_core_member, total_significant, total_critical
 
-async def calculate_and_display_contribution_importance(channel, interaction=None):
+async def calculate_and_display_contributions(channel, interaction=None):
     area_imp_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
     try:
-        with open(CONTRIBUTION_IMPORTANCE_FILE, 'r') as file:
-            for line in file:
+        with open(CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
+            lines = iter(file)
+            first_line = next(lines, None)
+            if first_line:
+                first_record = json.loads(first_line.strip())
+                start_time_str = first_record['issued_time']
+
+                author = first_record['author']
+                area = first_record['area']
+                importance = first_record['importance']
+                count = int(first_record['count'])
+
+                if author in AUTHORS_LIST:
+                    area_imp_counts[author][area][importance] += count
+
+            for line in lines:
                 try:
                     record = json.loads(line.strip())
                     author = record['author']
@@ -406,27 +373,23 @@ async def calculate_and_display_contribution_importance(channel, interaction=Non
                     if author in AUTHORS_LIST:
                         area_imp_counts[author][area][importance] += count
                 except json.JSONDecodeError:
-                    continue 
+                    continue
     except FileNotFoundError:
-        print("Contribution importance data file not found.")
-    
-    try:
-        with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
-            reports = json.load(file)
-    except FileNotFoundError:
-        await channel.send("Periodic contributions history file not found. Need periodic contributions history to generate the contribution importance report.")
+        print("Contribution history data file not found.")
+
+    if start_time_str is None:
+        await channel.send("Contribution history file is empty or not properly formatted.")
         return
 
-    start_time_str = min(report['start_time'] for report in reports)
     end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     embed_description = generate_embed_description_for_importance(CURRENT_STYLE, area_imp_counts)
-    embed = discord.Embed(title=f"Contribution Importance Report\n\n`{start_time_str}` to `{end_time_str}`", description=embed_description, color=0x4895EF)
+    embed = discord.Embed(title=f"Contributions Report\n\n`{start_time_str}` to `{end_time_str}`", description=embed_description, color=0x4895EF)
     toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_importance_style")
-    
+
     view = View()
     view.add_item(toggle_button)
-    
+
     if interaction:
         await interaction.edit_original_response(embed=embed, view=view)
     else:
@@ -557,7 +520,7 @@ async def total_formal_warnings_report(channel, interaction=None):
         warning_members = ", ".join([f"`{author}`" for author in members_to_expel])
         warning_members_ID = ", ".join([f"<@{DISCORD_USER_IDS_LIST[author_index]}>" for author_index in members_to_expel_index])
         expulsion_message = "**Members to be Expelled**\n\n"
-        expulsion_message += f"{warning_members_ID if CURRENT_STYLE else warning_members} should be expelled due to accumulating `{MAX_FORMAL_WARNINGS + 1}` or more **formal warnings**, in accordance with the CruxAbyss Development Team License Agreement, section 4.2 Members who accumulate 2 formal warnings will be expelled from the Development Team.\n"
+        expulsion_message += f"{warning_members_ID if CURRENT_STYLE else warning_members} should be expelled due to accumulating `{MAX_FORMAL_WARNINGS + 1}` or more **formal warnings**, in accordance with ???? \n"
         embed_description += "\n" + expulsion_message
 
     try:
@@ -579,31 +542,6 @@ async def total_formal_warnings_report(channel, interaction=None):
         await interaction.edit_original_response(embed=embed, view=view)
     else:
         await channel.send(embed=embed, view=view)
-
-def save_history(start_time_str, current_time_str):
-    history_data = {
-        'start_time': start_time_str,
-        'end_time': current_time_str,
-        'report_title': report_title,
-        'activity_counts': {activity: dict(counts) for activity, counts in activity_counts.items()}
-    }
-    try:
-        with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r+') as file:
-            data = json.load(file)
-            data.append(history_data)
-            file.seek(0)
-            file.truncate(0)  # Clear the file before rewriting
-            json.dump(data, file, indent=4)
-    except FileNotFoundError:
-        with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'w') as file:
-            json.dump([history_data], file, indent=4)
-
-def reset_counts():
-    global activity_counts
-    for activity in activity_counts:
-        for author in AUTHORS_LIST:
-            activity_counts[activity][author] = 0
-    print("Counts after reset:", activity_counts)
 
 def generate_embed_description(style, activity_counts_param, include_warnings=True):
     embed_description = ""
@@ -644,7 +582,7 @@ def generate_embed_description(style, activity_counts_param, include_warnings=Tr
         warning_members = ", ".join([f"`{author}`" for author in authors_with_warnings])
         warning_members_ID = ", ".join([f"<@{DISCORD_USER_IDS_LIST[author_index]}>" for author_index in authors_with_warnings_index])
         embed_description += "\n**Formal Warnings Issued**\n\n"
-        embed_description += f"{warning_members_ID if style else warning_members} **received** `1` **formal warning** due to non-compliance with the CruxAbyss Development Team License Agreement, section 3.2 Each member must make at least 1 'minor' contribution to the Project every 2 weeks. Failure to meet this requirement results in the issuance of 1 formal warning. 1 'significant' contribution can eliminate 1 formal warning."
+        embed_description += f"{warning_members_ID if style else warning_members} **received** `1` **formal warning** due to ???"
 
     return (embed_description, authors_with_warnings) if include_warnings else embed_description
     
@@ -672,9 +610,6 @@ async def send_report(style):
         view = View()
         view.add_item(toggle_button)
         await channel.send(embed=embed, view=view)
-
-        save_history(start_time_str, current_time_str)
-        await reset_counts()
 
     last_reset_time = current_time
     print(f"Periodic Contributions Report sent: `{start_time_str}` to `{current_time_str}`")
@@ -704,29 +639,34 @@ async def periodic_open_pr_issue_check():
                             data = await response.json()
                             labels = [label['name'] for label in data.get("labels", [])]
                             if len(labels) == 0:
-                                print("Meaningless PR/issue without any labels.")
-                                record['labels'] = labels
+                                # print("Meaningless PR/issue without any labels.")
+                                record['current_labels'] = labels
+                                if record['last_valid_labels']:
+                                    await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Contributions have been labeled as meaningless, contributions updated.")
+                                    record['last_valid_labels'] = []
                             elif labels == ['❔ pending']:
                                 if (not record['valid_area_labeled_by_author_time']):
                                     # ????????????????????? send the public notification
                                     await DGB.update_pr_issue(url, comment="Please add 1 appropriate `Area` label for this PR/issue.")
-                                    record['labels'] = labels
+                                    await DGB.notify_member(bot, name_to_id(record['author']), f"📝📝📝\n\nHello, <@{name_to_id(record['author'])}>, please add 1 appropriate `Area` label for your PR/issue.\n\n URL: {url}")
+                                    record['current_labels'] = labels
                                     record['valid_area_labeled_by_author_time'] = 'Notified'
                                 else:
-                                    record['labels'] = labels
-                                    print("Area label notification already sent.")
+                                    record['current_labels'] = labels
+                                    # print("Area label notification already sent.")
                             elif DGB.area_label_verification(labels):
                                 record['valid_importance_labeled_by_reviewers_time'] = ''
                                 # print("Valid area label found. Awaiting `Importance` label. (Reset `valid_importance_labeled_by_reviewers_time`.)")
                                 if (not record['valid_area_labeled_by_author_time'] or record['valid_area_labeled_by_author_time'] == 'Notified'):
                                     record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                    record['labels'] = labels
+                                    record['current_labels'] = labels
                                 if (not record['reviewers']):
                                     current_reviewers = [CORE_MEMBERS_LIST[0]]
                                     current_reviewers_str = ', @'.join(current_reviewers)
-                                    record['labels'] = labels
+                                    record['current_labels'] = labels
                                     record['reviewers'] = current_reviewers
                                     await DGB.update_pr_issue(url, reviewers=current_reviewers, comment=f"Reviewer @{current_reviewers_str} is assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.")
+                                    await DGB.notify_member(bot, name_to_id(current_reviewers[0]), f"📝📝📝\n\nHello, <@{name_to_id(current_reviewers[0])}>, you've been assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.\n\n URL: {url}")
                                 elif DGB.check_review_deadline_exceeded(record):
                                     if len(labels) == 2:
                                         print("Adding the label `⏰ review deadline exceeded`.")
@@ -738,14 +678,14 @@ async def periodic_open_pr_issue_check():
                                         new_reviewers_str = ', @'.join(new_reviewers)
                                         await DGB.update_pr_issue(url, labels=new_labels, reviewers=new_reviewers, comment=f"The review deadline for this PR/issue has been exceeded. New reviewer @{new_reviewers_str} is assigned to this PR/issue.\n(Previous reviewers were: @{previous_reviewers_str})")
                                         # ????????????????????? send the public notification
-                                        record['labels'] = new_labels
+                                        record['current_labels'] = new_labels
                                         record['reviewers'] = new_reviewers
                                         record['previous_reviewers'] = previous_reviewers
                                         record['review_ddl_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                     else:
-                                        record['labels'] = labels
+                                        record['current_labels'] = labels
                                         # print("Label `⏰ review deadline exceeded` has already been added.")
-                            elif DGB.meaningful_labels_verification(labels):
+                            elif DGB.meaningful_labels_verification(labels) and record['valid_area_labeled_by_author_time']:
                                 if DGB.check_review_deadline_exceeded(record):
                                     if len(labels) == 2:
                                         new_labels = labels + ['⏰ review deadline exceeded']
@@ -756,28 +696,72 @@ async def periodic_open_pr_issue_check():
                                     area_label = [first_match] if first_match is not None else []
                                     area_label = (area_label + [review_deadline_exceeded_label]) if review_deadline_exceeded_label is not None else area_label
                                     area_label_with_pending_label = area_label + ['❔ pending']
-                                    record['labels'] = area_label_with_pending_label
+                                    record['current_labels'] = area_label_with_pending_label
                                     record['valid_importance_labeled_by_reviewers_time'] = ''
                                     record['valid_area_labeled_by_author_time'] = ''
                                     record['reviewers'] = []
                                     await DGB.update_pr_issue(url, labels=area_label_with_pending_label, comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
                                 elif (not record['valid_importance_labeled_by_reviewers_time']):
-                                    record['labels'] = labels
-                                    current_reviewers = record['reviewers']
-                                    current_reviewers_str = ', @'.join(current_reviewers)
-                                    record['reviewers'] = current_reviewers
-                                    record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                    await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
+                                    if record['type'] == 'Issue':
+                                        if (await DGB.check_issue_latest_importance_labeling_action(url)):
+                                            record['current_labels'] = labels
+                                            current_reviewers = record['reviewers']
+                                            current_reviewers_str = ', @'.join(current_reviewers)
+                                            record['reviewers'] = current_reviewers
+                                            record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                            await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
+                                            if not record['last_valid_labels']:
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Contributions (Issue) recorded.")
+                                                record['last_valid_labels'] = labels
+                                            elif record['last_valid_labels'] != record['current_labels']:
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                                record['last_valid_labels'] = labels
+                                        else:
+                                            await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
+                                    else: # PR
+                                        if (await DGB.check_pr_latest_importance_labeling_action(url)):
+                                            record['current_labels'] = labels
+                                            current_reviewers = record['reviewers']
+                                            current_reviewers_str = ', @'.join(current_reviewers)
+                                            record['reviewers'] = current_reviewers
+                                            record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                            await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
+                                            if not record['last_valid_labels']:
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Contributions (PR) recorded.")
+                                                record['last_valid_labels'] = labels
+                                            elif record['last_valid_labels'] != record['current_labels']:
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                                record['last_valid_labels'] = labels
+                                        else:
+                                            await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
                                 else:
-                                    record['labels'] = labels
-                                    # print("No action needed.")
+                                    record['current_labels'] = labels
+                                    if record['last_valid_labels'] != record['current_labels']:
+                                        if record['type'] == 'Issue':
+                                            if (await DGB.check_issue_latest_importance_labeling_action(url)):
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                                record['last_valid_labels'] = labels
+                                            else:
+                                                await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
+                                                record['last_valid_labels'] = labels
+                                        else:
+                                            if (await DGB.check_pr_latest_importance_labeling_action(url)):
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                                record['last_valid_labels'] = labels
+                                            else:
+                                                await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
+                                                record['last_valid_labels'] = labels
                             else:
                                 first_match = next((label for label in labels if label in AREAS_LIST), None)
                                 review_deadline_exceeded_label = next((label for label in labels if label in ['⏰ review deadline exceeded']), None)
                                 area_label = [first_match] if first_match is not None else []
                                 area_label = (area_label + [review_deadline_exceeded_label]) if review_deadline_exceeded_label is not None else area_label
                                 area_label_with_pending_label = area_label + ['❔ pending']
-                                record['labels'] = area_label_with_pending_label
+                                record['current_labels'] = area_label_with_pending_label
                                 record['valid_importance_labeled_by_reviewers_time'] = ''
                                 record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                 record['reviewers'] = []
@@ -786,8 +770,7 @@ async def periodic_open_pr_issue_check():
                 with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
                     json.dump(records, file, indent=4)
 
-        await asyncio.sleep(5)  # Wait for 30 minutes (1800 seconds) before next iteration
-
+        await asyncio.sleep(10)  # Wait for 30 seconds before next iteration, note: 5,000 requests limit per hour for github personal api token
 
 @bot.event
 async def on_message(message):
@@ -826,7 +809,8 @@ async def on_message(message):
                     'author': embed_author_name,
                     'reviewers': [],
                     'url': embed.url,
-                    'labels': [],
+                    'last_valid_labels': [],
+                    'current_labels': []
                 }
 
                 async with file_access_lock:
@@ -867,69 +851,15 @@ async def on_message(message):
                 else:
                     print("Error extracting the PR/issue ID.")
 
-
-async def calculate_and_display_total_contributions(channel, interaction=None, toggle=False):
-    if toggle:
-        # When toggling, read from the total contributions file instead of recalculating
-        try:
-            with open(TOTAL_CONTRIBUTIONS_FILE, 'r') as file:
-                total_data = json.load(file)
-                start_time_str = total_data['start_time']
-                end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                total_activity_counts = total_data['activity_counts']
-        except FileNotFoundError:
-            await channel.send("Total contributions data file not found.")
-            return
-    else:
-        # Calculate total contributions and save to file
-        try:
-            with open(PERIODIC_CONTRIBUTIONS_HISTORY_FILE, 'r') as file:
-                reports = json.load(file)
-                if not reports:
-                    await channel.send("No report history found.")
-                    return
-
-                total_activity_counts = defaultdict(lambda: defaultdict(int))
-                for report in reports:
-                    for activity, counts in report['activity_counts'].items():
-                        for author, count in counts.items():
-                            total_activity_counts[activity][author] += count
-
-                start_time_str = min(report['start_time'] for report in reports)
-                end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-                total_data = {
-                    'start_time': start_time_str,
-                    'end_time': end_time_str,
-                    'activity_counts': {activity: dict(counts) for activity, counts in total_activity_counts.items()}
-                }
-                with open(TOTAL_CONTRIBUTIONS_FILE, 'w') as outfile:
-                    json.dump(total_data, outfile, indent=4)
-        except FileNotFoundError:
-            await channel.send("Periodic contributions history file not found.")
-            return
-
-        total_report_title = f"Total Contributions Report\n\n`{start_time_str}` to `{end_time_str}`"
-        total_embed_description = generate_embed_description(CURRENT_STYLE, total_activity_counts, include_warnings=False)
-        total_embed = discord.Embed(title=total_report_title, description=total_embed_description, color=0x4895EF)
-        toggle_button = Button(label="Toggle Output Style", style=discord.ButtonStyle.green, custom_id="toggle_total_style")
-        view = View()
-        view.add_item(toggle_button)
-        
-        if interaction:
-            await interaction.edit_original_response(embed=total_embed, view=view)
-        else:
-            await channel.send(embed=total_embed, view=view)
-
 @bot.event
 async def on_interaction(interaction):
     global CURRENT_STYLE
     if interaction.type == discord.InteractionType.component:
         if interaction.data.get('custom_id') == "add_importance_instruction":
-            instruction_message = "To assign a contribution importance level to a member, use the command `/add_contribs`. "
-            instruction_message += "You'll need to specify the member, the area and the importance level of their contribution, and the number of contributions at that level.\n\n"
-            instruction_message += "Example 1: `/add_contribs member:@User importance:5️⃣ critical number:2`.\n\n"
-            instruction_message += "Example 2: `/add_contribs member:@User importance:3️⃣ notable number:-1`.\n\n"
+            instruction_message = "To assign a contribution to a member, use the command `/add_contribs`. "
+            instruction_message += "You'll need to specify the member, the area, the importance level of their contribution, and the number of contributions at that level.\n\n"
+            instruction_message += "Example 1: `/add_contribs member:@User area:Art importance:5️⃣ critical number:1`.\n\n"
+            instruction_message += "Example 2: `/add_contribs member:@User area:Programming importance:3️⃣ notable number:-2`.\n\n"
             instruction_message += "**Important Restrictions**:\n"
             instruction_message += "- **Server Limitation**: This command is exclusive to the **CruxAbyss** server.\n"
             instruction_message += "- **Permission Requirement**: Only **admin** roles are authorized to use this command."
@@ -937,10 +867,10 @@ async def on_interaction(interaction):
         elif interaction.data.get('custom_id') == "toggle_importance_style":
             await interaction.response.defer()
             CURRENT_STYLE = not CURRENT_STYLE
-            await calculate_and_display_contribution_importance(interaction.channel, interaction=interaction)
-        elif interaction.data.get('custom_id') == "display_contribution_importance":
+            await calculate_and_display_contributions(interaction.channel, interaction=interaction)
+        elif interaction.data.get('custom_id') == "display_contributions":
             await interaction.response.defer()
-            await calculate_and_display_contribution_importance(interaction.channel, interaction=None)
+            await calculate_and_display_contributions(interaction.channel, interaction=None)
         elif interaction.data.get('custom_id') == "display_total_formal_warnings":
             await interaction.response.defer()
             await total_formal_warnings_report(interaction.channel, interaction=None)
@@ -949,15 +879,6 @@ async def on_interaction(interaction):
             await interaction.response.defer()
             CURRENT_STYLE = not CURRENT_STYLE
             await total_formal_warnings_report(interaction.channel, interaction=interaction)
-        elif interaction.data.get('custom_id') == "display_total_contributions":
-            await interaction.response.defer()
-            await calculate_and_display_total_contributions(interaction.channel, interaction=None, toggle=False)
-            return
-        elif interaction.data.get('custom_id') == "toggle_total_style":
-            await interaction.response.defer()
-            CURRENT_STYLE = not CURRENT_STYLE
-            await calculate_and_display_total_contributions(interaction.channel, interaction=interaction, toggle=True)
-            return
         elif interaction.data.get('custom_id').startswith("toggle_style"):
             parts = interaction.data.get('custom_id').replace("toggle_style_", "").split('_')
             start_time_parts = parts[0:2]

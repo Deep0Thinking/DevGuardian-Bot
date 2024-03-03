@@ -26,10 +26,10 @@ AUTHORS_LIST = ["",]
 DISCORD_USER_IDS_LIST = ["",]
 
 # List of predefined core members
-CORE_MEMBERS_LIST = ["",] 
+CORE_MEMBERS_LIST = [""]
 
 # Areas for contributions
-AREAS_LIST = ["Art", "Community Management", "Marketing and Public Relations", "Narrative and Writing", "Programming", "Project Management", "Quality Assurance", "Sound and Music", "Technical Art", "UI/UX Design"]
+AREAS_LIST = ["Art", "Community Management", "Marketing and Public Relations", "Game Design", "Narrative and Writing", "Programming", "Project Management", "Quality Assurance", "Sound and Music", "Technical Art", "UI/UX Design"]
 
 # Importance levels for contributions
 IMPORTANCES_LIST = ['5️⃣ critical', '4️⃣ significant', '3️⃣ notable', '2️⃣ moderate', '1️⃣ minor']
@@ -41,7 +41,7 @@ CURRENT_STYLE = False
 REPORT_INTERVAL = timedelta(days=1)
 
 # Deadline for reviewing PRs
-REVIEW_DEADLINE = timedelta(days=4)
+REVIEW_DEADLINE = timedelta(days=3)
 
 # Minimum number of contributions to be considered for periodic reports
 MIN_PERIODIC_CONTRIBUTIONS = 1
@@ -55,14 +55,11 @@ CORE_MEMBER_ROLE_NAME = "Core Member"
 # Periodic contributions history file path
 PERIODIC_CONTRIBUTIONS_HISTORY_FILE = 'periodic_contributions_history.json'
 
-# Total contributions file path
-TOTAL_CONTRIBUTIONS_FILE = 'total_contributions.json'
-
 # Formal warnings file path
 FORMAL_WARNINGS_FILE = 'formal_warnings.json'
 
 # Contribution importance file path
-CONTRIBUTION_IMPORTANCE_FILE = 'contribution_importance.json'
+CONTRIBUTIONS_HISTORY_FILE = 'contributions_history.json'
 
 # Temporary PR issue records file path
 CURRENT_OPEN_PR_ISSUE_FILE = 'current_open_pr_issue.json'

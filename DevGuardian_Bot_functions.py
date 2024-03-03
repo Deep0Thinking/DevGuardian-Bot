@@ -4,8 +4,8 @@ import aiohttp
 from datetime import datetime
 import json
 import asyncio
-
-file_access_lock = asyncio.Lock()
+import discord
+from discord.ext import commands
 
 IMPORTANCES_LIST = config.IMPORTANCES_LIST
 AREAS_LIST = config.AREAS_LIST
@@ -14,6 +14,20 @@ CORE_MEMBERS_LIST = config.CORE_MEMBERS_LIST
 AUTHORS_LIST = config.AUTHORS_LIST
 REVIEW_DEADLINE = config.REVIEW_DEADLINE
 CURRENT_OPEN_PR_ISSUE_FILE = config.CURRENT_OPEN_PR_ISSUE_FILE
+CONTRIBUTIONS_HISTORY_FILE = config.CONTRIBUTIONS_HISTORY_FILE
+DISCORD_USER_IDS_LIST = config.DISCORD_USER_IDS_LIST
+SERVER_ID = config.SERVER_ID
+
+
+file_access_lock = asyncio.Lock()
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+
+def id_to_name(author_id):
+    for idx, discord_id in enumerate(DISCORD_USER_IDS_LIST):
+        if str(discord_id) == str(author_id):
+            return AUTHORS_LIST[idx]
+    return None
 
 def print_embed_message(embed):
     print("----- Embed Info Begin -----")
@@ -243,6 +257,8 @@ async def fetch_latest_importance_labeler(session, url):
 async def check_pr_latest_importance_labeling_action(url):
     async with aiohttp.ClientSession() as session:
         reviewers = await fetch_pr_reviewers(session, url)
+        if not reviewers:
+            reviewers = {CORE_MEMBERS_LIST[0]}
         latest_importance_labeler = await fetch_latest_importance_labeler(session, url)
         if not latest_importance_labeler:
             print("No `Importance` label found.")
@@ -304,3 +320,78 @@ async def update_pr_issue(url, labels=None, state=None, comment=None, reviewers=
                     print(f"Failed to set reviewers for PR #{pr_or_issue_id}. Status code: {response.status}")
                     response_text = await response.text()
                     print(f"Response body: {response_text}")
+
+async def update_contribution(bot, author_id, issuer, labels, issued_time, number=1, url="N/A", reason="N/A"):
+
+    if len(labels) not in (0, 2, 3):
+        raise ValueError("Labels list must be of length 0, 2 or 3.")
+    
+    importance_label = next((label for label in labels if label in IMPORTANCES_LIST), None)
+    area_label = next((label for label in labels if label in AREAS_LIST), None)
+
+    if len(labels) == 0:
+        print("Meaningless contribution.")
+    elif not importance_label or not area_label:
+        raise ValueError("One label must be from the contribution areas and the other from the importance levels.")
+    
+    author_name = id_to_name(author_id)
+    
+    new_record = {
+        'author': author_name,
+        'issued_time': issued_time,
+        'issuer': issuer,
+        'area': area_label,
+        'importance': importance_label,
+        'count': str(number),
+        'url': url,
+        'reason': reason
+    }
+    
+    with open(CONTRIBUTIONS_HISTORY_FILE, 'a') as file:
+        file.write(json.dumps(new_record) + '\n')
+
+    guild = bot.get_guild(SERVER_ID)
+    if guild is None:
+        print("Guild not found")
+        return
+
+    member = await guild.fetch_member(author_id)
+    if member is None:
+        print(f"Could not find a member with the ID: {author_id}")
+        return
+
+    if member.dm_channel is None:
+        await member.create_dm()
+
+    await member.dm_channel.send(
+        f"🌟🌟🌟\n\n"
+        f"Hello, <@{member.id}>, your contribution has been updated:\n\n"
+        f"```"
+        f"Author: {author_name}\n"
+        f"Issued time: {issued_time}\n"
+        f"Issued by: {issuer}\n"
+        f"Area: {area_label}\n"
+        f"Importance: {importance_label}\n"
+        f"Count: {number}\n"
+        f"URL: {url}\n"
+        f"Reason: {reason}\n"
+        f"```"
+    )
+
+    # print("Contribution updated!")
+
+async def notify_member(bot, author_id, message):
+    guild = bot.get_guild(SERVER_ID)
+    if guild is None:
+        print("Guild not found")
+        return
+
+    member = await guild.fetch_member(author_id)
+    if member is None:
+        print(f"Could not find a member with the ID: {author_id}")
+        return
+
+    if member.dm_channel is None:
+        await member.create_dm()
+
+    await member.dm_channel.send(message)
