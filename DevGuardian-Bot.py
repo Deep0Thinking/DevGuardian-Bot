@@ -32,6 +32,8 @@ CURRENT_OPEN_PR_ISSUE_FILE = config.CURRENT_OPEN_PR_ISSUE_FILE
 IMPORTANCES_LIST = config.IMPORTANCES_LIST
 AREAS_LIST = config.AREAS_LIST
 CORE_MEMBERS_LIST = config.CORE_MEMBERS_LIST
+REPO_NAME = config.REPO_NAME
+MAIN_BRANCH = config.MAIN_BRANCH
 
 
 
@@ -166,6 +168,8 @@ report_title = ""
 async def on_ready():
     print(f'We have logged in as {bot.user}')
     synced = await bot.tree.sync()
+    if not synced:
+        raise RuntimeError("No commands were synced.")
     print(f'Synced {len(synced)} command (s)') # Restart your discord to see the changes
     bot.loop.create_task(background_task())
     bot.loop.create_task(periodic_open_pr_issue_check())
@@ -173,6 +177,7 @@ async def on_ready():
 async def background_task():
     await bot.wait_until_ready()
     while not bot.is_closed():
+        await check_direct_commits_to_main()
         if datetime.now() - last_reset_time >= REPORT_INTERVAL:
             await send_report(CURRENT_STYLE)
         await asyncio.sleep(1)
@@ -190,6 +195,51 @@ def name_to_id(author):
         if name == author:
             return DISCORD_USER_IDS_LIST[idx]
     return None
+
+async def check_direct_commits_to_main():
+    repo_name = REPO_NAME
+    main_branch = MAIN_BRANCH
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    prs_url = f"https://api.github.com/repos/{repo_name}/pulls?state=closed&base={main_branch}"
+
+    merged_pr_commits = set()
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(prs_url, headers=headers) as prs_response:
+            if prs_response.status == 200:
+                merged_prs = await prs_response.json()
+                for pr in merged_prs:
+                    if pr['merged_at']:  # Check if the PR was merged
+                        commits_url = pr['commits_url']
+                        async with session.get(commits_url, headers=headers) as commits_response:
+                            if commits_response.status == 200:
+                                pr_commits = await commits_response.json()
+                                for pr_commit in pr_commits:
+                                    merged_pr_commits.add(pr_commit['sha'])
+
+        commits_url = f"https://api.github.com/repos/{repo_name}/commits?sha={main_branch}"
+        async with session.get(commits_url, headers=headers) as commits_response:
+            print(f"Fetching commits status: {commits_response.status}")  # Debug line
+            if commits_response.status == 200:
+                print("Connected to GitHub.")
+                commits = await commits_response.json()
+                for commit in commits:
+                    commit_sha = commit['sha']
+                    if commit_sha in merged_pr_commits:
+                        print(f"Commit {commit_sha} was brought in through a merged PR.")
+                        break  # Stop the loop once the first merged PR commit is found
+                    else:
+                        if len(commit['parents']) > 1:
+                            print(f"Merge commit {commit_sha} was identified as a result of merging into {main_branch}.")
+                        else:
+                            print(f"❗️❗️❗️ Commit {commit_sha} was made directly to {main_branch}.")
+                            await DGB.notify_member(bot, name_to_id(CORE_MEMBERS_LIST[0]), f"❗️❗️❗️\n\nHello, <@{name_to_id(CORE_MEMBERS_LIST[0])}>, direct commit to main detected, please resolve it immediately\n\n Commit SHA: {commit_sha}")
+
+    await asyncio.sleep(3600)
 
 async def fetch_and_process_github_data(url, record_type, author_name):
     api_url = DGB.url_to_api_url(url)
@@ -211,9 +261,22 @@ async def fetch_and_process_github_data(url, record_type, author_name):
                         if data["pull_request"]["merged_at"] is not None:
                             if DGB.meaningful_labels_verification(labels):
                                 if (await DGB.check_pr_latest_importance_labeling_action(url)):
-                                    await DGB.update_contribution(bot, name_to_id(author_name), ["DevGuardian Bot"], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), url=url, reason="Contributions (PR) archived.")
-                                    remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
-                                    print("blabla")
+                                    async with file_access_lock:
+
+                                        try:
+                                            with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
+                                                records = json.load(file)
+                                        except FileNotFoundError:
+                                            print("Current_open_pr_issue file not found.")
+                                            return False
+                                        record = next((record for record in records if str(record.get('id')) == pr_or_issue_id), None)
+
+                                        if not (await process_pr_issue_record(record, session)):
+                                            await DGB.update_pr_issue(url, state="open", comment="This issue has been reopened due to non-notification update. Please wait until the notification is sent.")
+                                        else:
+                                            remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                                            await DGB.notify_member(bot, name_to_id(author_name), f"📝📝📝\n\nHello, <@{name_to_id(author_name)}>, your PR has been merged. Thank you for your contribution!\n\n URL: {url}")
+                                            print("PR archived.")
                                 else:
                                     await DGB.update_pr_issue(url, comment="This PR/issue should be reinspected due to invalid `Importance` labeler.\n\nOnly **Reviewers** are allowed to label the `Importance`.") # state="open"
                                     print("This PR/issue should be reinspected due to invalid `Importance` labeler. Only **Reviewers** are allowed to label the `Importance`.")
@@ -237,8 +300,23 @@ async def fetch_and_process_github_data(url, record_type, author_name):
                     elif (record_type == "Issue"):
                         if DGB.meaningful_labels_verification(labels):
                             if (await DGB.check_issue_latest_importance_labeling_action(url)):
-                                remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
-                                print("Issue archived.")
+
+                                async with file_access_lock:
+
+                                    try:
+                                        with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
+                                            records = json.load(file)
+                                    except FileNotFoundError:
+                                        print("Current_open_pr_issue file not found.")
+                                        return False
+                                    record = next((record for record in records if str(record.get('id')) == pr_or_issue_id), None)
+
+                                    if not (await process_pr_issue_record(record, session)):
+                                        await DGB.update_pr_issue(url, state="open", comment="This issue has been reopened due to non-notification update. Please wait until the notification is sent.")
+                                    else:
+                                        remove_record_from_current_open_pr_issue_file(pr_or_issue_id)
+                                        await DGB.notify_member(bot, name_to_id(author_name), f"📝📝📝\n\nHello, <@{name_to_id(author_name)}>, your issue has been archived. Thank you for your contribution!\n\n URL: {url}")
+                                        print("Issue archived.")
                             else:
                                 await DGB.update_pr_issue(url, state="open", comment="This issue has been reopened due to invalid `Importance` labeler.\n\nOnly **Core Members** are allowed to label the `Importance`.")
                                 print("This issue has been reopened due to invalid `Importance` labeler. Only **Core Members** are allowed to label the `Importance`.")
@@ -615,7 +693,9 @@ async def send_report(style):
     print(f"Periodic Contributions Report sent: `{start_time_str}` to `{current_time_str}`")
 
 async def periodic_open_pr_issue_check():
+    i = 0
     while True:
+        print(f"Periodic open PR/issue check iteration: {i}")
         async with file_access_lock:
             try:
                 with open(CURRENT_OPEN_PR_ISSUE_FILE, 'r') as file:
@@ -624,153 +704,173 @@ async def periodic_open_pr_issue_check():
                 print("Current open PR/Issue records file not found.")
                 records = []
 
-            for record in records:
-                url = record.get('url')
-                if not url:
-                    continue
-
-                async with aiohttp.ClientSession() as session:
-                    api_url = DGB.url_to_api_url(url)
-                    async with session.get(api_url, headers={
-                        "Authorization": f"token {GITHUB_TOKEN}",
-                        "Accept": "application/vnd.github.v3+json"
-                    }) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            labels = [label['name'] for label in data.get("labels", [])]
-                            if len(labels) == 0:
-                                # print("Meaningless PR/issue without any labels.")
-                                record['current_labels'] = labels
-                                if record['last_valid_labels']:
-                                    await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Contributions have been labeled as meaningless, contributions updated.")
-                                    record['last_valid_labels'] = []
-                            elif labels == ['❔ pending']:
-                                if (not record['valid_area_labeled_by_author_time']):
-                                    # ????????????????????? send the public notification
-                                    await DGB.update_pr_issue(url, comment="Please add 1 appropriate `Area` label for this PR/issue.")
-                                    await DGB.notify_member(bot, name_to_id(record['author']), f"📝📝📝\n\nHello, <@{name_to_id(record['author'])}>, please add 1 appropriate `Area` label for your PR/issue.\n\n URL: {url}")
-                                    record['current_labels'] = labels
-                                    record['valid_area_labeled_by_author_time'] = 'Notified'
-                                else:
-                                    record['current_labels'] = labels
-                                    # print("Area label notification already sent.")
-                            elif DGB.area_label_verification(labels):
-                                record['valid_importance_labeled_by_reviewers_time'] = ''
-                                # print("Valid area label found. Awaiting `Importance` label. (Reset `valid_importance_labeled_by_reviewers_time`.)")
-                                if (not record['valid_area_labeled_by_author_time'] or record['valid_area_labeled_by_author_time'] == 'Notified'):
-                                    record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                    record['current_labels'] = labels
-                                if (not record['reviewers']):
-                                    current_reviewers = [CORE_MEMBERS_LIST[0]]
-                                    current_reviewers_str = ', @'.join(current_reviewers)
-                                    record['current_labels'] = labels
-                                    record['reviewers'] = current_reviewers
-                                    await DGB.update_pr_issue(url, reviewers=current_reviewers, comment=f"Reviewer @{current_reviewers_str} is assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.")
-                                    await DGB.notify_member(bot, name_to_id(current_reviewers[0]), f"📝📝📝\n\nHello, <@{name_to_id(current_reviewers[0])}>, you've been assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.\n\n URL: {url}")
-                                elif DGB.check_review_deadline_exceeded(record):
-                                    if len(labels) == 2:
-                                        print("Adding the label `⏰ review deadline exceeded`.")
-                                        new_labels = labels + ['⏰ review deadline exceeded']
-                                        previous_reviewers = record['reviewers']
-                                        previous_reviewers_str = ', @'.join(previous_reviewers)
-                                        # ????????????????????? notify previous reviewers
-                                        new_reviewers = [CORE_MEMBERS_LIST[0]] # ?????
-                                        new_reviewers_str = ', @'.join(new_reviewers)
-                                        await DGB.update_pr_issue(url, labels=new_labels, reviewers=new_reviewers, comment=f"The review deadline for this PR/issue has been exceeded. New reviewer @{new_reviewers_str} is assigned to this PR/issue.\n(Previous reviewers were: @{previous_reviewers_str})")
-                                        # ????????????????????? send the public notification
-                                        record['current_labels'] = new_labels
-                                        record['reviewers'] = new_reviewers
-                                        record['previous_reviewers'] = previous_reviewers
-                                        record['review_ddl_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                    else:
-                                        record['current_labels'] = labels
-                                        # print("Label `⏰ review deadline exceeded` has already been added.")
-                            elif DGB.meaningful_labels_verification(labels) and record['valid_area_labeled_by_author_time']:
-                                if DGB.check_review_deadline_exceeded(record):
-                                    if len(labels) == 2:
-                                        new_labels = labels + ['⏰ review deadline exceeded']
-                                        await DGB.update_pr_issue(url, labels=new_labels)
-                                if (not record['reviewers']):
-                                    first_match = next((label for label in labels if label in AREAS_LIST), None)
-                                    review_deadline_exceeded_label = next((label for label in labels if label in ['⏰ review deadline exceeded']), None)
-                                    area_label = [first_match] if first_match is not None else []
-                                    area_label = (area_label + [review_deadline_exceeded_label]) if review_deadline_exceeded_label is not None else area_label
-                                    area_label_with_pending_label = area_label + ['❔ pending']
-                                    record['current_labels'] = area_label_with_pending_label
-                                    record['valid_importance_labeled_by_reviewers_time'] = ''
-                                    record['valid_area_labeled_by_author_time'] = ''
-                                    record['reviewers'] = []
-                                    await DGB.update_pr_issue(url, labels=area_label_with_pending_label, comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
-                                elif (not record['valid_importance_labeled_by_reviewers_time']):
-                                    if record['type'] == 'Issue':
-                                        if (await DGB.check_issue_latest_importance_labeling_action(url)):
-                                            record['current_labels'] = labels
-                                            current_reviewers = record['reviewers']
-                                            current_reviewers_str = ', @'.join(current_reviewers)
-                                            record['reviewers'] = current_reviewers
-                                            record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                            await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
-                                            if not record['last_valid_labels']:
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Contributions (Issue) recorded.")
-                                                record['last_valid_labels'] = labels
-                                            elif record['last_valid_labels'] != record['current_labels']:
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
-                                                record['last_valid_labels'] = labels
-                                        else:
-                                            await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
-                                    else: # PR
-                                        if (await DGB.check_pr_latest_importance_labeling_action(url)):
-                                            record['current_labels'] = labels
-                                            current_reviewers = record['reviewers']
-                                            current_reviewers_str = ', @'.join(current_reviewers)
-                                            record['reviewers'] = current_reviewers
-                                            record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                            await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
-                                            if not record['last_valid_labels']:
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Contributions (PR) recorded.")
-                                                record['last_valid_labels'] = labels
-                                            elif record['last_valid_labels'] != record['current_labels']:
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
-                                                record['last_valid_labels'] = labels
-                                        else:
-                                            await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
-                                else:
-                                    record['current_labels'] = labels
-                                    if record['last_valid_labels'] != record['current_labels']:
-                                        if record['type'] == 'Issue':
-                                            if (await DGB.check_issue_latest_importance_labeling_action(url)):
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
-                                                record['last_valid_labels'] = labels
-                                            else:
-                                                await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
-                                                record['last_valid_labels'] = labels
-                                        else:
-                                            if (await DGB.check_pr_latest_importance_labeling_action(url)):
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
-                                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
-                                                record['last_valid_labels'] = labels
-                                            else:
-                                                await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
-                                                record['last_valid_labels'] = labels
-                            else:
-                                first_match = next((label for label in labels if label in AREAS_LIST), None)
-                                review_deadline_exceeded_label = next((label for label in labels if label in ['⏰ review deadline exceeded']), None)
-                                area_label = [first_match] if first_match is not None else []
-                                area_label = (area_label + [review_deadline_exceeded_label]) if review_deadline_exceeded_label is not None else area_label
-                                area_label_with_pending_label = area_label + ['❔ pending']
-                                record['current_labels'] = area_label_with_pending_label
-                                record['valid_importance_labeled_by_reviewers_time'] = ''
-                                record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                record['reviewers'] = []
-                                await DGB.update_pr_issue(url, labels=area_label_with_pending_label, comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
-
-                with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
-                    json.dump(records, file, indent=4)
+            async with aiohttp.ClientSession() as session:
+                await process_pr_issue_records(records, session)
 
         await asyncio.sleep(10)  # Wait for 30 seconds before next iteration, note: 5,000 requests limit per hour for github personal api token
+        i += 1
+
+async def process_pr_issue_records(records, session):
+    for record in records:
+        await process_pr_issue_record(record, session)
+    with open(CURRENT_OPEN_PR_ISSUE_FILE, 'w') as file:
+        json.dump(records, file, indent=4)
+
+async def process_pr_issue_record(record, session):
+
+    url = record.get('url')
+
+    has_updated_contribution = False
+
+    api_url = DGB.url_to_api_url(url)
+    async with session.get(api_url, headers={
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }) as response:
+        if response.status == 200:
+            data = await response.json()
+            labels = [label['name'] for label in data.get("labels", [])]
+            if len(labels) == 0:
+                # print("Meaningless PR/issue without any labels.")
+                record['current_labels'] = labels
+                if record['last_valid_labels']:
+                    await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Contributions have been labeled as meaningless, contributions updated.")
+                    record['last_valid_labels'] = []
+                has_updated_contribution = True
+            elif labels == ['❔ pending']:
+                if (not record['valid_area_labeled_by_author_time']):
+                    # ????????????????????? send the public notification
+                    await DGB.update_pr_issue(url, comment="Please add 1 appropriate `Area` label for this PR/issue.")
+                    await DGB.notify_member(bot, name_to_id(record['author']), f"📝📝📝\n\nHello, <@{name_to_id(record['author'])}>, please add 1 appropriate `Area` label for your PR/issue.\n\n URL: {url}")
+                    record['current_labels'] = labels
+                    record['valid_area_labeled_by_author_time'] = 'Notified'
+                else:
+                    record['current_labels'] = labels
+                    # print("Area label notification already sent.")
+            elif DGB.area_label_verification(labels):
+                record['valid_importance_labeled_by_reviewers_time'] = ''
+                # print("Valid area label found. Awaiting `Importance` label. (Reset `valid_importance_labeled_by_reviewers_time`.)")
+                if (not record['valid_area_labeled_by_author_time'] or record['valid_area_labeled_by_author_time'] == 'Notified'):
+                    record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    record['current_labels'] = labels
+                if (not record['reviewers']):
+                    current_reviewers = [CORE_MEMBERS_LIST[0]]
+                    current_reviewers_str = ', @'.join(current_reviewers)
+                    record['current_labels'] = labels
+                    record['reviewers'] = current_reviewers
+                    await DGB.update_pr_issue(url, reviewers=current_reviewers, comment=f"Reviewer @{current_reviewers_str} is assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.")
+                    await DGB.notify_member(bot, name_to_id(current_reviewers[0]), f"📝📝📝\n\nHello, <@{name_to_id(current_reviewers[0])}>, you've been assigned to this PR/issue. Awaiting `Importance` label for this PR/issue.\n\n URL: {url}")
+                elif DGB.check_review_deadline_exceeded(record):
+                    if len(labels) == 2:
+                        print("Adding the label `⏰ review deadline exceeded`.")
+                        new_labels = labels + ['⏰ review deadline exceeded']
+                        previous_reviewers = record['reviewers']
+                        previous_reviewers_str = ', @'.join(previous_reviewers)
+                        # ????????????????????? notify previous reviewers
+                        new_reviewers = [CORE_MEMBERS_LIST[0]] # ?????
+                        new_reviewers_str = ', @'.join(new_reviewers)
+                        await DGB.update_pr_issue(url, labels=new_labels, reviewers=new_reviewers, comment=f"The review deadline for this PR/issue has been exceeded. New reviewer @{new_reviewers_str} is assigned to this PR/issue.\n(Previous reviewers were: @{previous_reviewers_str})")
+                        # ????????????????????? send the public notification
+                        record['current_labels'] = new_labels
+                        record['reviewers'] = new_reviewers
+                        record['previous_reviewers'] = previous_reviewers
+                        record['review_ddl_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        record['current_labels'] = labels
+                        # print("Label `⏰ review deadline exceeded` has already been added.")
+            elif DGB.meaningful_labels_verification(labels) and record['valid_area_labeled_by_author_time']:
+                if DGB.check_review_deadline_exceeded(record):
+                    if len(labels) == 2:
+                        new_labels = labels + ['⏰ review deadline exceeded']
+                        await DGB.update_pr_issue(url, labels=new_labels)
+                if (not record['reviewers']):
+                    first_match = next((label for label in labels if label in AREAS_LIST), None)
+                    review_deadline_exceeded_label = next((label for label in labels if label in ['⏰ review deadline exceeded']), None)
+                    area_label = [first_match] if first_match is not None else []
+                    area_label = (area_label + [review_deadline_exceeded_label]) if review_deadline_exceeded_label is not None else area_label
+                    area_label_with_pending_label = area_label + ['❔ pending']
+                    record['current_labels'] = area_label_with_pending_label
+                    record['valid_importance_labeled_by_reviewers_time'] = ''
+                    record['valid_area_labeled_by_author_time'] = ''
+                    record['reviewers'] = []
+                    await DGB.update_pr_issue(url, labels=area_label_with_pending_label, comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
+                elif (not record['valid_importance_labeled_by_reviewers_time']):
+                    if record['type'] == 'Issue':
+                        if (await DGB.check_issue_latest_importance_labeling_action(url)):
+                            record['current_labels'] = labels
+                            current_reviewers = record['reviewers']
+                            current_reviewers_str = ', @'.join(current_reviewers)
+                            record['reviewers'] = current_reviewers
+                            record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
+                            if not record['last_valid_labels']:
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Contributions (Issue) recorded.")
+                                record['last_valid_labels'] = labels
+                            elif record['last_valid_labels'] != record['current_labels']:
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                record['last_valid_labels'] = labels
+
+                            has_updated_contribution = True
+
+                        else:
+                            await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
+                    else: # PR
+                        if (await DGB.check_pr_latest_importance_labeling_action(url)):
+                            record['current_labels'] = labels
+                            current_reviewers = record['reviewers']
+                            current_reviewers_str = ', @'.join(current_reviewers)
+                            record['reviewers'] = current_reviewers
+                            record['valid_importance_labeled_by_reviewers_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            await DGB.update_pr_issue(url, comment=f"Reviewer @{current_reviewers_str} has added the `Importance` label to this PR/issue.")
+                            if not record['last_valid_labels']:
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Contributions (PR) recorded.")
+                                record['last_valid_labels'] = labels
+                            elif record['last_valid_labels'] != record['current_labels']:
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                record['last_valid_labels'] = labels
+                            
+                            has_updated_contribution = True
+
+                        else:
+                            await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
+                else:
+                    record['current_labels'] = labels
+                    if record['last_valid_labels'] != record['current_labels']:
+                        if record['type'] == 'Issue':
+                            if (await DGB.check_issue_latest_importance_labeling_action(url)):
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                record['last_valid_labels'] = labels
+                                has_updated_contribution = True
+                            else:
+                                await DGB.undo_invalid_issue_importance_labeling_action(session, url, labels)
+                                record['last_valid_labels'] = labels
+                        else: # PR
+                            if (await DGB.check_pr_latest_importance_labeling_action(url)):
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], record['last_valid_labels'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=-1, url=url, reason="Updating contributions with latest labels.")
+                                await DGB.update_contribution(bot, name_to_id(record['author']), record['reviewers'], labels, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), number=1, url=url, reason="Update finished.")
+                                record['last_valid_labels'] = labels
+                                has_updated_contribution = True
+                            else:
+                                await DGB.undo_invalid_pr_importance_labeling_action(session, url, labels)
+                                record['last_valid_labels'] = labels
+                    else:
+                        has_updated_contribution = True
+            else:
+                first_match = next((label for label in labels if label in AREAS_LIST), None)
+                review_deadline_exceeded_label = next((label for label in labels if label in ['⏰ review deadline exceeded']), None)
+                area_label = [first_match] if first_match is not None else []
+                area_label = (area_label + [review_deadline_exceeded_label]) if review_deadline_exceeded_label is not None else area_label
+                area_label_with_pending_label = area_label + ['❔ pending']
+                record['current_labels'] = area_label_with_pending_label
+                record['valid_importance_labeled_by_reviewers_time'] = ''
+                record['valid_area_labeled_by_author_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                record['reviewers'] = []
+                await DGB.update_pr_issue(url, labels=area_label_with_pending_label, comment="This PR/issue has been relabeled as `❔ pending` due to invalid labeling.")
+    
+    return has_updated_contribution
 
 @bot.event
 async def on_message(message):

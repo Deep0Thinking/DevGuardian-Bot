@@ -19,6 +19,10 @@ GITHUB_TOKEN = ''
 # Doc URL for the GitHub API
 DOC_URL = ""
 
+REPO_NAME = ""
+
+MAIN_BRANCH = ""
+
 # List of predefined authors to track
 AUTHORS_LIST = ["",]
 
@@ -26,7 +30,7 @@ AUTHORS_LIST = ["",]
 DISCORD_USER_IDS_LIST = ["",]
 
 # List of predefined core members
-CORE_MEMBERS_LIST = [""]
+CORE_MEMBERS_LIST = ["",]
 
 # Areas for contributions
 AREAS_LIST = ["Art", "Community Management", "Marketing and Public Relations", "Game Design", "Narrative and Writing", "Programming", "Project Management", "Quality Assurance", "Sound and Music", "Technical Art", "UI/UX Design"]

@@ -376,6 +376,7 @@ async def update_contribution(bot, author_id, issuer, labels, issued_time, numbe
         f"URL: {url}\n"
         f"Reason: {reason}\n"
         f"```"
+        f"\n\n URL: {url}"
     )
 
     # print("Contribution updated!")
