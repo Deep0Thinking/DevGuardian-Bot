@@ -121,6 +121,11 @@ async def add_contribs(interaction: discord.Interaction, member: discord.Member,
         number_with_sign = f"+{number}" if number > 0 else str(number)
         await interaction.response.defer(ephemeral=False)
         await interaction.followup.send(f"`{importance.name}` `{number_with_sign}` to {member.mention}'s contribution in `{area.name}`, URL: `{url}`, Reason: `{reason}`")
+        
+        '''
+        
+        need to be updated
+
         if importance.value == '4️⃣ significant' or importance.value == '5️⃣ critical':
             async with file_access_lock:
                 with open(FORMAL_WARNINGS_FILE, 'r') as file:
@@ -154,6 +159,7 @@ async def add_contribs(interaction: discord.Interaction, member: discord.Member,
                         await interaction.followup.send(f"🌟 **Core Member Designation** 🌟\n\n{member.mention} has made `5` or more `significant` **contributions** and is now designated as a **Core Member** of the CruxAbyss Development Team. Core Members have the right to vote on critical decisions and are the only members eligible to serve as reviewers for `pull requests`, ensuring a high standard of quality and consistency in the development process.")
                     else:
                         print(f"Role '{CORE_MEMBER_ROLE_NAME}' not found or member already has the role.")
+        '''
 
 activity_counts = {
     'Pull request opened': defaultdict(int, {author: 0 for author in AUTHORS_LIST}),
